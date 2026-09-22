@@ -58,13 +58,20 @@ impl Store {
         version: u32,
         yaml: &str,
     ) -> Result<String, StoreError> {
+        let conn = self.conn.lock().unwrap();
         let id = format!("wf_{}", uuid::Uuid::new_v4().simple());
-        self.conn.lock().unwrap().execute(
+        conn.execute(
             "INSERT INTO workflows(id, name, version, yaml) VALUES(?1,?2,?3,?4) \
              ON CONFLICT(name, version) DO UPDATE SET yaml=excluded.yaml",
             params![id, name, version, yaml],
         )?;
-        Ok(id)
+        // ON CONFLICT 路径下新造的 id 不会入库，须回查实际存续行的 id
+        let surviving: String = conn.query_row(
+            "SELECT id FROM workflows WHERE name=?1 AND version=?2",
+            params![name, version],
+            |r| r.get(0),
+        )?;
+        Ok(surviving)
     }
 
     pub fn create_run(
@@ -303,5 +310,20 @@ mod tests {
             "{\"ok\":true}"
         );
         assert_eq!(s.get_run(&run).unwrap().unwrap().status, "finished");
+    }
+
+    #[test]
+    fn upsert_workflow_same_name_version_returns_surviving_id() {
+        let s = Store::open_in_memory().unwrap();
+        let id1 = s.upsert_workflow("demo", 1, "yaml v1").unwrap();
+        let id2 = s.upsert_workflow("demo", 1, "yaml v2").unwrap();
+        assert_eq!(
+            id1, id2,
+            "ON CONFLICT path must return the surviving row's id"
+        );
+        // 用该 id 建 run 必须成功，且 get_run 能取回指向同一 workflow 的行
+        let run = s.create_run(&id2, &serde_json::json!({})).unwrap();
+        let row = s.get_run(&run).unwrap().unwrap();
+        assert_eq!(row.workflow_id, id1);
     }
 }
