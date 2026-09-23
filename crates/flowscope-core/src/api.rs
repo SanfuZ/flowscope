@@ -8,7 +8,8 @@
 //!
 //! SSE（`GET /api/runs/{id}/events`）合并算法：先 `hub.subscribe` 再
 //! `hub.snapshot_after`（环形缓冲），缺口用 `store.events_after` 补齐，按 seq
-//! 去重排序后逐条下发；直播阶段只转发 seq 大于已发最大值的事件。
+//! 去重排序后逐条下发；直播阶段只转发 seq 大于已发最大值的事件，broadcast
+//! 溢出（Lagged）即断流，由浏览器 EventSource 携 Last-Event-ID 重连补缺口。
 
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
@@ -395,8 +396,10 @@ fn sse_frame(ev: &FsEvent) -> sse::Event {
         .data(serde_json::to_string(ev).unwrap_or_else(|_| "{}".into()))
 }
 
-/// 直播阶段：只转发 seq 严格大于已发最大值的事件（重复/迟到丢弃），
-/// broadcast 溢出（Lagged）跳过继续，通道关闭则流结束。
+/// 直播阶段：只转发 seq 严格大于已发最大值的事件（重复/迟到丢弃）。
+/// broadcast 溢出（Lagged）说明慢客户端已永久错过事件——此时**结束流**
+/// （而非跳过继续）：浏览器 EventSource 会自动重连并携带 Last-Event-ID，
+/// 走本 handler 既有的 ring + store 回放补齐缺口。通道关闭则流自然结束。
 fn live_events(
     rx: broadcast::Receiver<Arc<FsEvent>>,
     after: u64,
@@ -409,7 +412,13 @@ fn live_events(
                     return Some((Ok(sse_frame(&ev)), (rx, max)));
                 }
                 Ok(_) => continue,
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(
+                        missed,
+                        "SSE 直播溢出，结束流——客户端将以 Last-Event-ID 重连补缺口"
+                    );
+                    return None;
+                }
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
@@ -913,6 +922,70 @@ mod tests {
         let (status, _) =
             req_json(&app, get_req(format!("/api/runs/{run_id}/events?after=x"))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Lagged（慢客户端溢出 broadcast 容量 1024）必须**结束流**而不是静默
+    /// 跳过 seq 继续直播：结束后浏览器 EventSource 自动重连带 Last-Event-ID，
+    /// 由既有 ring+store 回放补齐缺口。若实现退回 `continue`，本测试会在
+    /// 有界等待内收不到流结束而失败。
+    #[tokio::test]
+    async fn sse_lagged_receiver_terminates_stream_for_reconnect() {
+        let state = test_state();
+        let app = router(state.clone());
+        let run_id = start_finished_run(&state).await;
+
+        // 打开流：oneshot 完成 = handler 已 subscribe + 快照（回放仅含本次
+        // run 的少量事件），此后 rx 上未消费任何消息
+        let res = app
+            .clone()
+            .oneshot(get_req(format!("/api/runs/{run_id}/events?after=0")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // 不读流的情况下灌 1200 条（> 容量 1024）→ 首次 recv 必然 Lagged
+        const FILL: u64 = 1200;
+        for i in 0..FILL {
+            state.hub.publish(FsEvent {
+                seq: 100_000 + i,
+                ts: chrono::Utc::now(),
+                run_id: run_id.clone(),
+                node_id: None,
+                session_id: None,
+                kind: EventKind::LogLines,
+                payload: json!({"lines": ["lag-fill"], "source": "stderr"}),
+            });
+        }
+
+        // 有界等待（10s，小于 15s keep-alive 间隔）内流必须结束（None），
+        // 且不得出现跳seq后转发的 lag-fill 帧
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let mut stream = res.into_body().into_data_stream();
+        let mut text = String::new();
+        let mut ended = false;
+        loop {
+            match tokio::time::timeout_at(deadline, stream.next()).await {
+                Ok(Some(Ok(bytes))) => text.push_str(&String::from_utf8_lossy(&bytes)),
+                Ok(Some(Err(_))) => {}
+                Ok(None) => {
+                    ended = true;
+                    break;
+                }
+                Err(_) => break, // 超时未结束
+            }
+        }
+        assert!(
+            ended,
+            "Lagged 后流应在 10s 内结束以便 EventSource 重连补缺口，实际挂起: {text}"
+        );
+        assert!(
+            !text.contains("lag-fill"),
+            "Lagged 后不得跳过 seq 静默转发新事件: {text}"
+        );
+        assert!(
+            text.contains("run.finished"),
+            "回放部分不受影响（含 run.finished）: {text}"
+        );
     }
 
     #[tokio::test]

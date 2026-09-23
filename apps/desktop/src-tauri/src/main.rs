@@ -58,6 +58,12 @@ fn locate_mock_agent(root: &Path) -> Option<PathBuf> {
 }
 
 fn main() {
+    // 日志初始化：fmt 默认写 stderr（release 的 windows_subsystem 隐藏控制台，
+    // 仍可重定向）；级别由 RUST_LOG 控制，缺省 info。须在任何 core 日志前调用。
+    tracing_subscriber::fmt()
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
+        .init();
+
     let home = dirs::home_dir()
         .expect("无法确定用户 home 目录")
         .join(".flowscope");

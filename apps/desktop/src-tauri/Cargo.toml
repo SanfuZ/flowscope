@@ -13,4 +13,5 @@ tauri = { version = "2", features = [] }
 flowscope-core = { path = "../../../crates/flowscope-core" }
 tokio = { workspace = true }
 axum = { workspace = true }
+tracing-subscriber = { workspace = true }
 dirs = "6"

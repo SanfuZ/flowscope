@@ -1173,6 +1173,7 @@ dependencies = [
  "http-body-util",
  "jsonschema",
  "minijinja",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1198,6 +1199,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

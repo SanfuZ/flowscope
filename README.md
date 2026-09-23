@@ -92,7 +92,7 @@ name = "企业 Agent"
 
 | 层 | 命令 | 覆盖 |
 |---|---|---|
-| Rust 单元/集成 | `cargo test` | DSL 解析/校验、引擎调度与重试、ACP 会话层（含子进程 wire 级）、事件/存储/SSE、脱敏纯函数、mock-agent 脚本机 |
+| Rust 单元/集成 | `cargo test` | DSL 解析/校验、引擎调度与重试、ACP 会话层（含子进程 wire 级）、事件/存储/SSE、脱敏纯函数 `events::redact()`、mock-agent 脚本机 |
 | 前端单元 | `cd frontend && npm test` | 事件 reducer、图解析/布局、NodeCard/NodeDrawer 组件 |
 | E2E 冒烟 | `cd frontend && npm run e2e` | Playwright 拉起 dev bin：mock 工作流全链路（3 节点点亮 + 抽屉消息/工具 + 终态 finished）与崩溃注入（节点红 + run failed） |
 
@@ -120,8 +120,9 @@ M2 候选方向（详见上述文档）：渲染后 prompt 回显、真实 agent
 - **agent 无健康探测**：`GET /api/agents` 恒报 `healthy: true`。
 - **桌面版未出安装包**：`bundle.active = false`，CSP 未配置，图标为占位；
   cargo-tauri CLI 未纳入本仓流程。
-- **脱敏未接线**：spec §8 的脱敏能力仅实现 config 字段与
-  `flowscope_core::events::redact()` 纯函数，事件管道接线留待 M2。
+- **脱敏未接线**：spec §8 的脱敏能力 M1 已交付
+  `flowscope_core::events::redact()` 纯函数（含单测）；config 规则加载与
+  事件管道中的应用为 M2。
 - **单用户本地工具**：无鉴权 / 多租户 / 权限模型。
 - **取消语义局限**：仅支持本进程内 run 取消；进程重启后遗留 run 被标记
   `interrupted`，再取消返回 404。

@@ -16,6 +16,7 @@ agent-client-protocol = { workspace = true }
 minijinja = { workspace = true }
 jsonschema = { workspace = true }
 chrono = { workspace = true }
+regex = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 # bin/dev.rs 日志初始化（EnvFilter）
