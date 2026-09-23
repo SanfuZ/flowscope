@@ -1,0 +1,97 @@
+// 五 tab 各自渲染代表内容；artifact 拉取 mock 掉（vi.mock api 客户端）。
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { api } from '../api/client';
+import type { NodeView } from '../store/runStore';
+import { emptyView, useRunStore } from '../store/runStore';
+import NodeDrawer from './NodeDrawer';
+
+vi.mock('../api/client', () => ({
+  api: { getArtifact: vi.fn(async () => '{"ok":true,"answer":"周报"}') },
+}));
+
+const seededNode: NodeView = {
+  status: 'succeeded',
+  message: '你好 FlowScope',
+  reasoning: ['先思考一下'],
+  tools: [{ id: 't1', title: '查询数据库', kind: 'fetch', status: 'completed' }],
+  plan: {
+    entries: [
+      { content: '收集数据', status: 'completed' },
+      { content: '生成摘要', status: 'in_progress' },
+      { content: '发送邮件', status: 'pending' },
+    ],
+  },
+  logs: ['[info] node a start', '[info] node a done'],
+};
+
+function renderDrawer() {
+  useRunStore.getState().setRun({ ...emptyView('run-1', ['a']), nodes: { a: seededNode } });
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <NodeDrawer runId="run-1" nodeId="a" onClose={() => {}} />
+    </QueryClientProvider>,
+  );
+}
+
+afterEach(() => {
+  cleanup();
+  useRunStore.getState().reset();
+  vi.clearAllMocks();
+});
+
+describe('NodeDrawer：五 tab', () => {
+  it('默认消息 tab：message 文本 + reasoning 折叠块', () => {
+    renderDrawer();
+    expect(screen.getByText('你好 FlowScope')).toBeTruthy();
+    expect(screen.getByText(/先思考一下/)).toBeTruthy();
+    expect(screen.getByTestId('drawer-message')).toBeTruthy();
+  });
+
+  it('工具 tab：工具行（标题/kind/状态图标）', () => {
+    renderDrawer();
+    fireEvent.click(screen.getByRole('tab', { name: '工具' }));
+    const tools = screen.getByTestId('drawer-tools');
+    expect(withinText(tools, '查询数据库')).toBe(true);
+    expect(withinText(tools, 'fetch')).toBe(true);
+    expect(withinText(tools, '✓')).toBe(true);
+  });
+
+  it('Plan tab：三条目带状态图标', () => {
+    renderDrawer();
+    fireEvent.click(screen.getByRole('tab', { name: 'Plan' }));
+    const plan = screen.getByTestId('drawer-plan');
+    expect(withinText(plan, '收集数据')).toBe(true);
+    expect(withinText(plan, '生成摘要')).toBe(true);
+    expect(withinText(plan, '发送邮件')).toBe(true);
+    // completed ✓ / in_progress ◐ / pending ○
+    expect(withinText(plan, '✓')).toBe(true);
+    expect(withinText(plan, '◐')).toBe(true);
+    expect(withinText(plan, '○')).toBe(true);
+  });
+
+  it('日志 tab：react-window 渲染日志行', () => {
+    renderDrawer();
+    fireEvent.click(screen.getByRole('tab', { name: '日志' }));
+    const logs = screen.getByTestId('drawer-logs');
+    expect(withinText(logs, '[info] node a start')).toBe(true);
+    expect(withinText(logs, '[info] node a done')).toBe(true);
+  });
+
+  it('输入输出 tab：输入 M2 占位 + 成功后拉取 output artifact', async () => {
+    renderDrawer();
+    fireEvent.click(screen.getByRole('tab', { name: '输入输出' }));
+    const io = screen.getByTestId('drawer-io');
+    expect(withinText(io, 'M2')).toBe(true);
+    // artifact 经 react-query 异步返回（mock 的 getArtifact）
+    await waitFor(() => expect(screen.getByText(/周报/)).toBeTruthy());
+    expect(vi.mocked(api.getArtifact)).toHaveBeenCalledWith('run-1', 'a', 'output');
+  });
+});
+
+/** textContent 包含断言的薄封装（react-window 行有内联样式，不便逐节点取）。 */
+function withinText(el: HTMLElement, text: string): boolean {
+  return el.textContent != null && el.textContent.includes(text);
+}

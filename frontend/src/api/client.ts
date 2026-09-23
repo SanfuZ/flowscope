@@ -65,6 +65,16 @@ export const api = {
   cancelRun: (id: string): Promise<{ ok: boolean }> =>
     req<{ ok: boolean }>(`/api/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
 
+  /** GET /api/runs/:id/artifacts/:node/:name —— 后端按存储 content_type 原样
+   *  返回内容（非 JSON 信封），故不走 req<T>，返回纯文本由调用方解析。 */
+  getArtifact: async (runId: string, node: string, name: string): Promise<string> => {
+    const res = await fetch(
+      `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(node)}/${encodeURIComponent(name)}`,
+    );
+    if (!res.ok) throw new Error(`artifact ${node}/${name} HTTP ${res.status}`);
+    return res.text();
+  },
+
   /** SSE 订阅地址（相对路径，EventSource 会拼上当前 origin）。 */
   eventsUrl: (runId: string, after: number): string =>
     `/api/runs/${encodeURIComponent(runId)}/events?after=${after}`,

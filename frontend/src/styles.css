@@ -1,0 +1,783 @@
+/* FlowScope 全局样式：朴素浅色主题，纯 CSS（无 tailwind/组件库）。 */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e2e5ea;
+  --text: #1f2430;
+  --muted: #8a919e;
+  --blue: #2563eb;
+  --blue-bg: #eff6ff;
+  --green: #16a34a;
+  --green-bg: #f0fdf4;
+  --red: #dc2626;
+  --red-bg: #fef2f2;
+  --orange: #ea580c;
+  --orange-bg: #fff7ed;
+  --gray: #6b7280;
+  --gray-bg: #f3f4f6;
+  --mono: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* --- 应用壳 --- */
+
+.fs-app {
+  display: flex;
+  height: 100%;
+}
+
+.fs-side {
+  width: 200px;
+  flex: none;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 16px 12px;
+}
+
+.fs-side__logo {
+  font-weight: 700;
+  font-size: 18px;
+  margin-bottom: 20px;
+  letter-spacing: 0.5px;
+}
+
+.fs-nav {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  margin-bottom: 4px;
+}
+
+.fs-nav:hover {
+  background: var(--gray-bg);
+}
+
+.fs-nav--active {
+  background: var(--blue-bg);
+  color: var(--blue);
+  font-weight: 600;
+}
+
+.fs-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* --- 通用页面（列表/详情，可滚动） --- */
+
+.fs-page {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+.fs-page__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.fs-page__head h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.fs-muted {
+  color: var(--muted);
+}
+
+.fs-link {
+  color: var(--blue);
+  text-decoration: none;
+}
+
+.fs-link:hover {
+  text-decoration: underline;
+}
+
+.fs-error-text {
+  color: var(--red);
+}
+
+.fs-ok-text {
+  color: var(--green);
+}
+
+.fs-time {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* --- 表格 / 卡片 --- */
+
+.fs-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fs-table th,
+.fs-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-table th {
+  background: var(--gray-bg);
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.fs-table tr:last-child td {
+  border-bottom: none;
+}
+
+.fs-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.fs-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.15s;
+}
+
+.fs-card:hover {
+  border-color: var(--blue);
+}
+
+.fs-card__name {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.fs-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fs-card__id {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* --- 状态徽章 --- */
+
+.fs-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.fs-badge--pending {
+  color: var(--gray);
+  background: var(--gray-bg);
+  border-color: #d1d5db;
+}
+
+.fs-badge--running {
+  color: var(--blue);
+  background: var(--blue-bg);
+  border-color: #bfdbfe;
+}
+
+.fs-badge--succeeded {
+  color: var(--green);
+  background: var(--green-bg);
+  border-color: #bbf7d0;
+}
+
+.fs-badge--failed {
+  color: var(--red);
+  background: var(--red-bg);
+  border-color: #fecaca;
+}
+
+.fs-badge--cancelled {
+  color: var(--orange);
+  background: var(--orange-bg);
+  border-color: #fed7aa;
+}
+
+.fs-badge--skipped {
+  color: var(--gray);
+  background: transparent;
+  border-color: var(--gray);
+  border-style: dashed;
+}
+
+/* --- 按钮 --- */
+
+.fs-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.fs-btn:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.fs-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.fs-btn--primary {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+.fs-btn--primary:hover:not(:disabled) {
+  color: #fff;
+  opacity: 0.9;
+}
+
+.fs-btn--danger {
+  color: var(--red);
+  border-color: #fecaca;
+}
+
+.fs-btn--danger:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.fs-btn--ghost {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+}
+
+/* --- 工作流详情 --- */
+
+.fs-wfdetail {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.fs-wfdetail__editor {
+  flex: 1;
+  min-width: 0;
+}
+
+.fs-wfdetail__side {
+  width: 420px;
+  flex: none;
+}
+
+.fs-wfdetail h3 {
+  font-size: 14px;
+  margin: 4px 0 8px;
+}
+
+.fs-wfdetail__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.fs-yaml,
+.fs-params {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  resize: vertical;
+}
+
+.fs-yaml:focus,
+.fs-params:focus {
+  outline: 2px solid var(--blue-bg);
+  border-color: var(--blue);
+}
+
+.fs-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.fs-label textarea {
+  margin-top: 4px;
+}
+
+.fs-preview {
+  height: 240px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  color: var(--muted);
+}
+
+/* --- 运行监控 --- */
+
+.fs-monitor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fs-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-topbar__id {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fs-topbar__spacer {
+  flex: 1;
+}
+
+.fs-conn {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fs-conn--on {
+  color: var(--green);
+}
+
+.fs-conn--off {
+  color: var(--orange);
+}
+
+.fs-banner {
+  background: var(--orange-bg);
+  color: var(--orange);
+  border-bottom: 1px solid #fed7aa;
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.fs-monitor__main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.fs-canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.fs-canvas__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- DAG 节点卡片（六态） --- */
+
+@keyframes fs-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+  }
+}
+
+.fs-node {
+  width: 200px;
+  min-height: 64px;
+  border-radius: 10px;
+  border: 2px solid var(--border);
+  background: var(--panel);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.fs-node__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.fs-node__agent {
+  background: var(--gray-bg);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--gray);
+}
+
+.fs-node__id {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.fs-node__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fs-node__elapsed {
+  font-family: var(--mono);
+  color: var(--blue);
+}
+
+.fs-node__tool {
+  margin-top: 4px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-node__error {
+  margin-top: 4px;
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.fs-node--pending {
+  border-color: var(--border);
+}
+
+.fs-node--running {
+  border-color: var(--blue);
+  background: var(--blue-bg);
+  animation: fs-pulse 1.5s infinite;
+}
+
+.fs-node--running .fs-node__agent {
+  background: #dbeafe;
+  color: var(--blue);
+}
+
+.fs-node--succeeded {
+  border-color: var(--green);
+  background: var(--green-bg);
+}
+
+.fs-node--failed {
+  border-color: var(--red);
+  background: var(--red-bg);
+}
+
+.fs-node--cancelled {
+  border-color: var(--orange);
+  background: var(--orange-bg);
+}
+
+.fs-node--skipped {
+  border-color: var(--gray);
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+/* --- 节点抽屉 --- */
+
+.fs-drawer {
+  width: 360px;
+  flex: none;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fs-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-drawer__title {
+  font-family: var(--mono);
+  font-weight: 700;
+}
+
+.fs-drawer__empty {
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.fs-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-tab {
+  flex: 1;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+
+.fs-tab--active {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+  font-weight: 600;
+}
+
+.fs-drawer__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+/* 消息 tab */
+
+.fs-reasoning {
+  margin-bottom: 10px;
+}
+
+.fs-reasoning__block {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fs-reasoning__block summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.fs-reasoning__block p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.fs-msg {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+.fs-follow-pause {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--orange);
+  text-align: center;
+}
+
+/* 工具 tab */
+
+.fs-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fs-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.fs-tool-icon {
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.fs-tool-icon--completed {
+  color: var(--green);
+}
+
+.fs-tool-icon--in_progress {
+  color: var(--blue);
+}
+
+.fs-tool-icon--error {
+  color: var(--red);
+}
+
+.fs-tool-icon--pending {
+  color: var(--gray);
+}
+
+.fs-tool-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-tool-kind {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Plan tab */
+
+.fs-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fs-plan-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.fs-plan-row:hover {
+  background: var(--bg);
+}
+
+.fs-plan-icon {
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.fs-plan-icon--completed {
+  color: var(--green);
+}
+
+.fs-plan-icon--in_progress {
+  color: var(--blue);
+}
+
+.fs-plan-content {
+  flex: 1;
+}
+
+.fs-plan-priority {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* 日志 tab */
+
+.fs-loglist {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.fs-log-row {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 20px;
+  color: #374151;
+}
+
+/* 输入输出 tab */
+
+.fs-io h4 {
+  margin: 8px 0 6px;
+  font-size: 13px;
+}
+
+.fs-io-pre {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-x: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
