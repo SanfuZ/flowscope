@@ -1,0 +1,9 @@
+# Crash-injection script for flowscope-mock-agent (failure-path testing).
+#
+# During session/prompt the agent executes step 1, prints to stderr, and exits
+# with code 3 before answering the prompt request.
+steps:
+  - {delay_ms: 10, message: "about to crash"}
+stop: end_turn
+crash_after: 1
+stderr_lines: ["mock agent starting"]

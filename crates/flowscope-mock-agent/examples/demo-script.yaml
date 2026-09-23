@@ -1,0 +1,15 @@
+# Demo script for flowscope-mock-agent (drives a full successful prompt turn).
+#
+# `session/prompt` streams these steps as session/update notifications, then
+# answers the prompt with {"stopReason": "end_turn"}.
+steps:
+  - {delay_ms: 50, message: "正在收集数据..."}
+  - {tool: {id: t1, title: "查询数据库", kind: fetch, status: in_progress}}
+  - {delay_ms: 80, message: "检索完成"}
+  - {tool: {id: t1, status: completed, content: ["rows: 3"]}}
+  - {plan: [{id: p1, content: 收集数据, status: completed}, {id: p2, content: 生成摘要, status: in_progress}]}
+  - {message: '{"ok": true, "data_path": "out/report.md"}'}
+final_message: '{"ok": true, "data_path": "out/report.md"}'
+stop: end_turn        # end_turn | cancelled | refusal | max_tokens | max_turn_requests
+crash_after: null     # 整数：执行到该 step 后进程 stderr 打印并 exit(3)（失败注入）
+stderr_lines: ["mock agent starting"]   # 启动即向 stderr 输出的行

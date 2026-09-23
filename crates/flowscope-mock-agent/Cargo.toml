@@ -3,6 +3,9 @@ name = "flowscope-mock-agent"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "flowscope_mock_agent"
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
