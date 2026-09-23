@@ -7,3 +7,6 @@
 
 pub mod registry;
 pub mod session;
+
+pub use registry::{AgentConfig, AgentRegistry};
+pub use session::{NodeFailure, NodeRequest, run_agent_node};

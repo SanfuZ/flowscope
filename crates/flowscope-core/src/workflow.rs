@@ -10,6 +10,8 @@ pub struct WorkflowDef {
     pub params: serde_json::Map<String, serde_json::Value>,
     pub nodes: Vec<AgentNodeDef>,
     pub edges: Vec<EdgeDef>,
+    /// 节点失败策略：`"abort_run"`（默认，None 同义）或 `"continue_independent"`。
+    pub on_node_failure: Option<String>,
 }
 
 /// 单个节点定义。
@@ -70,6 +72,8 @@ struct RawWorkflow {
     nodes: Vec<AgentNodeDef>,
     #[serde(default)]
     edges: Vec<EdgeDef>,
+    #[serde(default)]
+    on_node_failure: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +100,7 @@ pub fn parse_yaml(yaml: &str) -> Result<WorkflowDef, WorkflowError> {
         params: raw.params,
         nodes: raw.nodes,
         edges: raw.edges,
+        on_node_failure: raw.on_node_failure,
     })
 }
 

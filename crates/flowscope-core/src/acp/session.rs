@@ -236,7 +236,7 @@ impl TurnState {
 pub async fn run_agent_node(
     cfg: &AgentConfig,
     req: &NodeRequest,
-    sink: &dyn Fn(FsEvent),
+    sink: &(dyn Fn(FsEvent) + Sync),
 ) -> Result<String, NodeFailure> {
     let Some((program, args)) = cfg.command.split_first() else {
         return Err(NodeFailure::ProcessExit(format!(
@@ -628,7 +628,7 @@ async fn handle_dispatch(
     state: &RunState,
     dispatch: acp::Dispatch,
     turn: &mut TurnState,
-    sink: &dyn Fn(FsEvent),
+    sink: &(dyn Fn(FsEvent) + Sync),
 ) -> Result<(), acp::Error> {
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
