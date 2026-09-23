@@ -323,10 +323,14 @@ fn tool_update(tool: &ToolStep, seen_tools: &mut HashSet<String>) -> Value {
         update["status"] = json!(status);
     }
     if let Some(content) = &tool.content {
+        // Tool-call content uses the ToolCallContent envelope: each item is
+        // `{"type": "content", "content": <ContentBlock>}` (an unenveloped
+        // content block is not valid per the v1 schema and would be dropped
+        // by lenient parsers).
         update["content"] = json!(
             content
                 .iter()
-                .map(|text| text_block(text))
+                .map(|text| json!({"type": "content", "content": text_block(text)}))
                 .collect::<Vec<_>>()
         );
     }
