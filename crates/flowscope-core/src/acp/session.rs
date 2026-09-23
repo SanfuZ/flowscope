@@ -145,11 +145,41 @@ impl RunState {
     /// `fs/read_text_file` policy (spec §3.3): allowed only inside the agent's
     /// configured cwd; no configured cwd means no restriction.
     fn fs_read_allowed(&self, path: &Path) -> bool {
-        match &self.fs_root {
-            None => true,
-            Some(root) => path.starts_with(root),
-        }
+        fs_read_allowed(self.fs_root.as_deref(), path)
     }
+}
+
+/// `fs/read_text_file` whitelist check (spec §3.3): `requested` is allowed
+/// only when it resolves inside `cwd`; `None` means no restriction.
+///
+/// Both sides are canonicalized first, so lexical tricks cannot bypass the
+/// check: `root/../../secrets` resolves to its true location before the
+/// prefix comparison, and a nonexistent path (whose true location cannot be
+/// established) is denied outright. On Windows `fs::canonicalize` yields
+/// `\\?\`-prefixed verbatim paths; the prefix is stripped from both sides so
+/// they compare consistently. Casing: canonicalize resolves every component
+/// to its on-disk casing, so two results for the same file compare equal even
+/// if the inputs differed (`d:/` vs `D:/`).
+fn fs_read_allowed(cwd: Option<&Path>, requested: &Path) -> bool {
+    let Some(root) = cwd else { return true };
+    match (
+        canonical_for_compare(root),
+        canonical_for_compare(requested),
+    ) {
+        (Some(root), Some(requested)) => requested.starts_with(root),
+        _ => false,
+    }
+}
+
+/// Canonicalizes `path` for whitelist comparison: resolves symlinks/`..` to
+/// the true location and strips the Windows `\\?\` verbatim prefix (both
+/// sides get the same treatment, so the comparison stays well-defined).
+/// `None` when the path does not exist.
+fn canonical_for_compare(path: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let text = canonical.as_os_str().to_string_lossy();
+    let stripped = text.strip_prefix("\\\\?\\").unwrap_or(&text);
+    Some(PathBuf::from(stripped))
 }
 
 /// Latest merged fields of one tool call, so `tool_call_update` events can
@@ -952,5 +982,35 @@ mod tests {
             start.elapsed() < Duration::from_secs(10),
             "timeout must not wait on the child"
         );
+    }
+
+    #[test]
+    fn fs_read_whitelist_blocks_traversal_and_nonexistent_paths() {
+        let root = std::env::temp_dir().join(format!("flowscope-wl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("inside.txt"), "ok").unwrap();
+        let outside =
+            std::env::temp_dir().join(format!("flowscope-outside-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, "secret").unwrap();
+
+        // (a) real path inside the root → allowed.
+        assert!(fs_read_allowed(Some(&root), &root.join("inside.txt")));
+        assert!(fs_read_allowed(Some(&root), &root.join("sub")));
+
+        // (b) `..` traversal escaping the root → denied, even though the
+        // escaped-to path exists.
+        let escape = root.join("..").join(outside.file_name().unwrap());
+        assert!(!fs_read_allowed(Some(&root), &escape));
+        assert!(!fs_read_allowed(Some(&root), &root.join("sub/../../..")));
+
+        // (c) nonexistent path (even lexically inside) → denied: canonicalize
+        // fails, so there is nothing trustworthy to compare.
+        assert!(!fs_read_allowed(Some(&root), &root.join("missing.txt")));
+
+        // (d) no configured cwd → no restriction.
+        assert!(fs_read_allowed(None, Path::new("C:/does/not/exist")));
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_file(&outside).ok();
     }
 }
