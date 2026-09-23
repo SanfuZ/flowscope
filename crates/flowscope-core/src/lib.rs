@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod api;
 pub mod cond;
 pub mod engine;
 pub mod events;

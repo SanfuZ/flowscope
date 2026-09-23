@@ -13,6 +13,7 @@ pub enum StoreError {
     Chrono(#[from] chrono::ParseError),
 }
 
+#[derive(serde::Serialize)]
 pub struct RunRow {
     pub id: String,
     pub workflow_id: String,
@@ -20,6 +21,15 @@ pub struct RunRow {
     pub params: serde_json::Value,
     pub started_at: String,
     pub ended_at: Option<String>,
+}
+
+/// workflows 表的完整行（API 层读写 YAML 原文用）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkflowRow {
+    pub id: String,
+    pub name: String,
+    pub version: u32,
+    pub yaml: String,
 }
 
 pub struct Store {
@@ -72,6 +82,68 @@ impl Store {
             |r| r.get(0),
         )?;
         Ok(surviving)
+    }
+
+    pub fn get_workflow(&self, id: &str) -> Result<Option<WorkflowRow>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, name, version, yaml FROM workflows WHERE id=?1")?;
+        let row = stmt
+            .query_row(params![id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .optional()?;
+        Ok(row.map(|(id, name, version, yaml)| WorkflowRow {
+            id,
+            name,
+            version: version as u32,
+            yaml,
+        }))
+    }
+
+    pub fn list_workflows(&self) -> Result<Vec<WorkflowRow>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT id, name, version, yaml FROM workflows ORDER BY name, version")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(WorkflowRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                version: r.get::<_, i64>(2)? as u32,
+                yaml: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 删除工作流及其全部运行痕迹（runs → events/artifacts/sessions 级联）。
+    /// 返回 false 表示该 id 不存在（未删任何东西）。
+    pub fn delete_workflow(&self, id: &str) -> Result<bool, StoreError> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflows WHERE id=?1)",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(false);
+        }
+        for sql in [
+            "DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE workflow_id=?1)",
+            "DELETE FROM artifacts WHERE run_id IN (SELECT id FROM runs WHERE workflow_id=?1)",
+            "DELETE FROM sessions WHERE run_id IN (SELECT id FROM runs WHERE workflow_id=?1)",
+            "DELETE FROM runs WHERE workflow_id=?1",
+            "DELETE FROM workflows WHERE id=?1",
+        ] {
+            tx.execute(sql, params![id])?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     pub fn create_run(
@@ -261,6 +333,26 @@ impl Store {
             .optional()?;
         Ok(content)
     }
+
+    /// 同 [`Store::get_artifact`]，但一并返回存储时声明的 content_type
+    /// （HTTP 层据此设置响应头）。
+    pub fn get_artifact_with_type(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        name: &str,
+    ) -> Result<Option<(String, String)>, StoreError> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT content_type, content FROM artifacts WHERE run_id=?1 AND node_id=?2 AND name=?3",
+        )?;
+        let row = stmt
+            .query_row(params![run_id, node_id, name], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .optional()?;
+        Ok(row)
+    }
 }
 
 #[cfg(test)]
@@ -325,5 +417,78 @@ mod tests {
         let run = s.create_run(&id2, &serde_json::json!({})).unwrap();
         let row = s.get_run(&run).unwrap().unwrap();
         assert_eq!(row.workflow_id, id1);
+    }
+
+    #[test]
+    fn get_and_list_workflows_roundtrip() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(s.list_workflows().unwrap().is_empty());
+        assert!(s.get_workflow("wf_missing").unwrap().is_none());
+
+        let a = s
+            .upsert_workflow("alpha", 1, "meta: {name: alpha}")
+            .unwrap();
+        let b = s.upsert_workflow("beta", 2, "meta: {name: beta}").unwrap();
+        let got = s.get_workflow(&a).unwrap().unwrap();
+        assert_eq!(got.name, "alpha");
+        assert_eq!(got.version, 1);
+        assert_eq!(got.yaml, "meta: {name: alpha}");
+
+        let names: Vec<(String, u32)> = s
+            .list_workflows()
+            .unwrap()
+            .into_iter()
+            .map(|w| (w.name, w.version))
+            .collect();
+        assert_eq!(names, vec![("alpha".into(), 1), ("beta".into(), 2)]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn delete_workflow_cascades_runs_events_artifacts() {
+        let s = Store::open_in_memory().unwrap();
+        let wf = s.upsert_workflow("gone", 1, "meta: {name: gone}").unwrap();
+        let run = s.create_run(&wf, &serde_json::json!({})).unwrap();
+        s.append_events(&[ev(1, &run)]).unwrap();
+        s.put_artifact(&run, "n1", "output", "application/json", "{}")
+            .unwrap();
+        // 保留一个不相关的工作流，证明级联不误伤
+        let keep = s.upsert_workflow("keep", 1, "meta: {name: keep}").unwrap();
+
+        assert!(s.delete_workflow(&wf).unwrap());
+        assert!(s.get_workflow(&wf).unwrap().is_none(), "工作流行已删");
+        assert!(s.get_run(&run).unwrap().is_none(), "run 行已级联删除");
+        assert_eq!(
+            s.events_after(&run, 0, 100).unwrap().len(),
+            0,
+            "事件已级联删除"
+        );
+        assert!(s.get_artifact(&run, "n1", "output").unwrap().is_none());
+        // 不存在的 id → false（幂等失败）
+        assert!(!s.delete_workflow(&wf).unwrap());
+        assert!(
+            s.get_workflow(&keep).unwrap().is_some(),
+            "无关工作流不受影响"
+        );
+    }
+
+    #[test]
+    fn artifact_with_type_returns_content_type() {
+        let s = Store::open_in_memory().unwrap();
+        let wf = s.upsert_workflow("demo", 1, "x").unwrap();
+        let run = s.create_run(&wf, &serde_json::json!({})).unwrap();
+        s.put_artifact(&run, "n1", "output", "application/json", "{\"ok\":true}")
+            .unwrap();
+        let (ctype, content) = s
+            .get_artifact_with_type(&run, "n1", "output")
+            .unwrap()
+            .unwrap();
+        assert_eq!(ctype, "application/json");
+        assert_eq!(content, "{\"ok\":true}");
+        assert!(
+            s.get_artifact_with_type(&run, "n1", "nope")
+                .unwrap()
+                .is_none()
+        );
     }
 }

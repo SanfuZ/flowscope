@@ -18,6 +18,8 @@ jsonschema = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+# bin/dev.rs 日志初始化（EnvFilter）
+tracing-subscriber = { workspace = true }
 tower-http = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -27,3 +29,5 @@ thiserror = { workspace = true }
 # Integration tests spawn the Task-7 mock agent binary; assert_cmd locates it
 # (the test helper builds it first — assert_cmd 2.x no longer builds).
 assert_cmd = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
