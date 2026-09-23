@@ -1,0 +1,16 @@
+[package]
+name = "flowscope-desktop"
+version.workspace = true
+edition.workspace = true
+description = "FlowScope 桌面壳（Tauri 2）：进程内嵌引擎，随机本地端口 + WebView 直连"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+flowscope-core = { path = "../../../crates/flowscope-core" }
+tokio = { workspace = true }
+axum = { workspace = true }
+dirs = "6"
