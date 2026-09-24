@@ -2,7 +2,7 @@
 // dev 模式经 vite 代理，因此基址就是 window.location.origin。
 // 非 2xx → 抛 Error(body.error)（后端错误统一为 {"error": "..."}）。
 import { parseWorkflowGraph } from './graph';
-import type { RunRow, StartRunResult, WorkflowDetail, WorkflowGraph, WorkflowSummary } from './types';
+import type { AgentRow, RunRow, StartRunResult, WorkflowDetail, WorkflowGraph, WorkflowSummary } from './types';
 
 const BASE = window.location.origin;
 
@@ -35,6 +35,9 @@ interface WorkflowRow {
 
 export const api = {
   listWorkflows: () => req<WorkflowSummary[]>('/api/workflows'),
+
+  /** GET /api/agents：agents.toml 注册的 agent 清单（画布编辑器面板）。 */
+  listAgents: (): Promise<AgentRow[]> => req<AgentRow[]>('/api/agents'),
 
   getWorkflow: async (id: string): Promise<WorkflowDetail> => {
     const row = await req<WorkflowRow>(`/api/workflows/${encodeURIComponent(id)}`);

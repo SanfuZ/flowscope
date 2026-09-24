@@ -113,3 +113,11 @@ export interface RunRow {
 export interface StartRunResult {
   run_id: string;
 }
+
+/** GET /api/agents 行：agents.toml 注册的 agent 清单（编辑器面板消费）。 */
+export interface AgentRow {
+  key: string;
+  name: string;
+  permission_default: string;
+  healthy: boolean;
+}
