@@ -1,22 +1,35 @@
-// 工作流详情（`/workflows/:id`，`new` 为新建）：
-// YAML 编辑 + 保存 + 只读 DAG 预览（编辑实时重排）+ 启动（params 为自由 JSON 文本域）。
-//
-// 【M1 简化（控制器裁定）】启动参数不做表单生成，直接给 JSON 文本域（默认 {}）；
-// 后端 startRun 请求体契约见 client.ts。
+// 工作流详情（`/workflows/:id`，`new` 为新建）——M2a 重写：画布为主交互。
+// 结构：header（标题 + dirty 圆点 | 工具栏 [撤销][重做] | [YAML 源码] | 校验徽章 |
+// [保存][启动运行]）+ .fs-editor-layout（左 EditableCanvas flex-1，右 PropertyPanel 384px）。
+// 文档事实源在 editorStore（Task 3~5）；本页只做装配：
+//   - 载入：new → loadBlank()；既有 → wfQuery.data.yaml → loadYaml。
+//     用 lastDocRef 记录已处理的 {id, data}（比简报的 !loaded 守卫更强：同一份
+//     data 的 effect 重跑/StrictMode 双调用被引用相等拦下，且能处理 id 切换）。
+//     同 id 的 refetch 新数据（react-query 结构共享保证引用变⇔内容变）：脏 → 不
+//     覆盖编辑、显示「服务器数据已更新」提示；干净 → 重载。
+//   - 保存门：problems = validateWorkflow(model)（未加载时 ['未加载']），
+//     非空禁用保存并以 title 列出首条；不设 dirty 门槛（M1 语义：干净文档允许
+//     显式重存）。成功 → markSaved + invalidate ['workflows']/['workflow']，
+//     isNew 跳 `/workflows/${res.id}`（replace）。
+//   - 启动（控制器最终裁定，取代简报的对话框方案）：一键直发，无对话框——
+//     params = model.params ?? {}（在设置态属性面板编辑，随文档保存）。
+//     空参数即 {}，与 M1「params 默认 {} 直接接受」等价，既有 e2e
+//     （run.spec.ts 不可改）点「启动运行」后直接落 /runs/:id 的契约保持不变。
+//   - 撤销/重做：按钮随 past/future 启停；快捷键挂页面容器（tabIndex -1）。
+//     输入控件聚焦时不拦截（保留浏览器原生文本撤销）。
+//   - YAML 源码：fixed 右侧滑入浮层（520px）。打开时对 toYaml() 取快照，
+//     打开期间画布编辑不回写文本（快照语义）；[刷新] 重取；[应用到画布] →
+//     loadYaml，解析失败就地显示 parseErrors 且不关闭，成功关闭浮层。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ReactFlow, type Edge } from '@xyflow/react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api, parseWorkflowGraph } from '../api/client';
-import type { WorkflowGraph } from '../api/types';
-import { layoutGraph } from '../lib/layout';
-import { nodeTypes } from '../lib/nodeTypes';
-
-const DEFAULT_YAML = `meta: {name: my-workflow, version: 1}
-nodes:
-  - {id: step1, agent: mock, prompt: "你好"}
-edges: []
-`;
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { api } from '../api/client';
+import type { WorkflowDetail as WorkflowDetailRow } from '../api/types';
+import { validateWorkflow } from '../lib/validate';
+import { useEditorStore } from '../store/editorStore';
+import EditableCanvas from '../components/EditableCanvas';
+import PropertyPanel from '../components/PropertyPanel';
 
 export default function WorkflowDetail() {
   const { id = '' } = useParams();
@@ -24,47 +37,80 @@ export default function WorkflowDetail() {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
+  const loaded = useEditorStore((s) => s.loaded);
+  const model = useEditorStore((s) => s.model);
+  const dirty = useEditorStore((s) => s.dirty);
+  const pastLen = useEditorStore((s) => s.past.length);
+  const futureLen = useEditorStore((s) => s.future.length);
+  const loadBlank = useEditorStore((s) => s.loadBlank);
+  const loadYaml = useEditorStore((s) => s.loadYaml);
+  const undo = useEditorStore((s) => s.undo);
+  const redo = useEditorStore((s) => s.redo);
+
   const wfQuery = useQuery({
     queryKey: ['workflow', id],
     queryFn: () => api.getWorkflow(id),
     enabled: !isNew,
   });
 
-  const [yamlText, setYamlText] = useState(DEFAULT_YAML);
+  // --- 载入（new → loadBlank；既有 → loadYaml，含 refetch/切 id 策略） ---
+  const lastDocRef = useRef<{ id: string; data: WorkflowDetailRow } | null>(null);
+  const [staleNotice, setStaleNotice] = useState(false);
   useEffect(() => {
-    if (wfQuery.data) setYamlText(wfQuery.data.yaml);
-  }, [wfQuery.data]);
+    if (isNew) {
+      loadBlank(); // 幂等：StrictMode 双调用重置为同一空白文档
+      lastDocRef.current = null;
+      setStaleNotice(false);
+      return;
+    }
+    const data = wfQuery.data;
+    if (!data) return;
+    const prev = lastDocRef.current;
+    if (prev && prev.id === id && prev.data === data) return; // 同一份数据已处理
+    lastDocRef.current = { id, data };
+    if (!prev || prev.id !== id) {
+      loadYaml(data.yaml); // 首次装载该 id（含从 new/其它工作流切来）
+      setStaleNotice(false);
+      return;
+    }
+    // 同 id 的 refetch 新数据：脏 → 保留编辑只提示；干净 → 重载
+    if (useEditorStore.getState().dirty) {
+      setStaleNotice(true);
+    } else {
+      loadYaml(data.yaml);
+      setStaleNotice(false);
+    }
+  }, [wfQuery.data, id, isNew, loadBlank, loadYaml]);
 
-  // 编辑实时预览：从当前文本重新提取图
-  const graph = useMemo(() => parseWorkflowGraph(yamlText), [yamlText]);
+  // --- 保存门 ---
+  const problems = useMemo(
+    () => (loaded && model ? validateWorkflow(model) : ['未加载']),
+    [loaded, model],
+  );
 
   const saveMut = useMutation({
-    mutationFn: () =>
-      api.saveWorkflow(wfQuery.data?.name ?? '', wfQuery.data?.version ?? 1, yamlText),
+    mutationFn: () => {
+      const s = useEditorStore.getState();
+      return api.saveWorkflow(s.model?.name ?? '', s.model?.version ?? 1, s.toYaml());
+    },
     onSuccess: (res) => {
+      useEditorStore.getState().markSaved();
       qc.invalidateQueries({ queryKey: ['workflows'] });
       qc.invalidateQueries({ queryKey: ['workflow'] });
       if (isNew) navigate(`/workflows/${res.id}`, { replace: true });
     },
   });
 
-  // --- 启动（M1：自由 JSON params） ---
-  const [paramsText, setParamsText] = useState('{}');
-  const [launchError, setLaunchError] = useState('');
+  // --- 启动：一键直发（见文件头裁定说明），params 取文档当前 params ---
   const [launching, setLaunching] = useState(false);
-
+  const [launchError, setLaunchError] = useState('');
   const launch = async () => {
-    let params: Record<string, unknown>;
-    try {
-      params = JSON.parse(paramsText.trim() === '' ? '{}' : paramsText);
-    } catch (e) {
-      setLaunchError(`params 不是合法 JSON：${e instanceof Error ? e.message : String(e)}`);
-      return;
-    }
-    setLaunchError('');
+    const m = useEditorStore.getState().model;
+    if (m == null) return;
     setLaunching(true);
+    setLaunchError('');
     try {
-      const res = await api.startRun(id, params);
+      const res = await api.startRun(id, m.params ?? {});
       navigate(`/runs/${res.run_id}`);
     } catch (e) {
       setLaunchError(e instanceof Error ? e.message : String(e));
@@ -72,107 +118,168 @@ export default function WorkflowDetail() {
     }
   };
 
+  // --- 撤销/重做快捷键（页面容器；输入控件内不拦截，保留原生文本撤销） ---
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) {
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      undo();
+    } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+      e.preventDefault();
+      redo();
+    }
+  };
+
+  // --- YAML 源码浮层（快照语义） ---
+  const [yamlOpen, setYamlOpen] = useState(false);
+  const [yamlDraft, setYamlDraft] = useState('');
+  const [yamlErrors, setYamlErrors] = useState<string[]>([]);
+  const openYamlView = () => {
+    setYamlDraft(useEditorStore.getState().toYaml());
+    setYamlErrors([]);
+    setYamlOpen(true);
+  };
+  const refreshYamlDraft = () => {
+    setYamlDraft(useEditorStore.getState().toYaml());
+    setYamlErrors([]);
+  };
+  const applyYamlDraft = () => {
+    loadYaml(yamlDraft);
+    const errs = useEditorStore.getState().parseErrors;
+    if (errs.length > 0) {
+      setYamlErrors(errs); // 解析失败：就地显示，不关闭、不覆盖画布
+      return;
+    }
+    setYamlErrors([]);
+    setYamlOpen(false);
+  };
+
+  const title = isNew ? '新建工作流' : `工作流：${model?.name ?? wfQuery.data?.name ?? id}`;
+
   return (
-    <div className="fs-page">
+    <div className="fs-page fs-page--editor" tabIndex={-1} onKeyDown={onKeyDown}>
       <header className="fs-page__head">
-        <h1>{isNew ? '新建工作流' : `工作流：${wfQuery.data?.name ?? id}`}</h1>
-        <span className="fs-muted">{isNew ? '保存后生成 ID' : wfQuery.data ? `v${wfQuery.data.version} · ${id}` : ''}</span>
+        <h1>
+          {title}
+          {dirty && <span className="fs-dirty-dot" title="有未保存修改" />}
+          {dirty ? ' ·未保存' : ''}
+        </h1>
+        <div className="fs-edit-toolbar">
+          <button className="fs-btn" disabled={pastLen === 0} onClick={() => undo()}>
+            撤销
+          </button>
+          <button className="fs-btn" disabled={futureLen === 0} onClick={() => redo()}>
+            重做
+          </button>
+          <span className="fs-edit-toolbar__sep" aria-hidden />
+          <button className="fs-btn" onClick={openYamlView}>
+            YAML 源码
+          </button>
+          {problems.length > 0 ? (
+            <span className="fs-badge fs-badge--cancelled" title={problems.join('\n')}>
+              ⚠ {problems.length}
+            </span>
+          ) : (
+            <span className="fs-badge fs-badge--succeeded">✓ 通过</span>
+          )}
+          <span className="fs-edit-toolbar__sep" aria-hidden />
+          <button
+            className="fs-btn"
+            disabled={problems.length > 0 || saveMut.isPending}
+            title={problems.length > 0 ? problems[0] : undefined}
+            onClick={() => saveMut.mutate()}
+          >
+            {saveMut.isPending ? '保存中…' : '保存'}
+          </button>
+          <button
+            className="fs-btn fs-btn--primary"
+            disabled={isNew || launching || !loaded}
+            title={isNew ? '请先保存' : undefined}
+            onClick={launch}
+          >
+            {launching ? '启动中…' : '启动运行'}
+          </button>
+        </div>
       </header>
+
       {wfQuery.isError && (
-        <div className="fs-error-text">加载失败：{String((wfQuery.error as Error)?.message ?? wfQuery.error)}</div>
+        <div className="fs-editor-msgs">
+          <span className="fs-error-text">
+            加载失败：{String((wfQuery.error as Error)?.message ?? wfQuery.error)}
+          </span>
+        </div>
       )}
-      <div className="fs-wfdetail">
-        <section className="fs-wfdetail__editor">
-          <h3>YAML</h3>
-          <textarea
-            className="fs-yaml"
-            value={yamlText}
-            spellCheck={false}
-            onChange={(e) => setYamlText(e.target.value)}
-            rows={20}
-          />
-          <div className="fs-wfdetail__actions">
-            <button className="fs-btn" disabled={saveMut.isPending || yamlText.trim() === ''} onClick={() => saveMut.mutate()}>
-              {saveMut.isPending ? '保存中…' : '保存'}
-            </button>
-            {saveMut.isError && (
-              <span className="fs-error-text">保存失败：{String((saveMut.error as Error)?.message ?? saveMut.error)}</span>
-            )}
-            {saveMut.isSuccess && !isNew && <span className="fs-ok-text">已保存</span>}
-          </div>
-        </section>
-        <section className="fs-wfdetail__side">
-          <h3>DAG 预览（只读，编辑实时更新）</h3>
-          <GraphPreview graph={graph} />
-          <h3>启动</h3>
-          <label className="fs-label">
-            params（JSON，M1 不做表单生成）
-            <textarea
-              className="fs-params"
-              value={paramsText}
-              spellCheck={false}
-              onChange={(e) => setParamsText(e.target.value)}
-              rows={4}
-            />
-          </label>
-          <div className="fs-wfdetail__actions">
-            <button
-              className="fs-btn fs-btn--primary"
-              disabled={isNew || graph.nodes.length === 0 || launching}
-              onClick={launch}
-              title={isNew ? '请先保存' : graph.nodes.length === 0 ? '未解析到节点' : undefined}
-            >
-              {launching ? '启动中…' : '启动运行'}
-            </button>
-            {launchError && <span className="fs-error-text">{launchError}</span>}
-          </div>
-        </section>
+      {saveMut.isError && (
+        <div className="fs-editor-msgs">
+          <span className="fs-error-text">
+            保存失败：{String((saveMut.error as Error)?.message ?? saveMut.error)}
+          </span>
+        </div>
+      )}
+      {launchError && (
+        <div className="fs-editor-msgs">
+          <span className="fs-error-text">{launchError}</span>
+        </div>
+      )}
+      {saveMut.isSuccess && !isNew && !dirty && (
+        <div className="fs-editor-msgs">
+          <span className="fs-ok-text">已保存</span>
+        </div>
+      )}
+      {staleNotice && (
+        <div className="fs-editor-msgs">
+          <span className="fs-muted">服务器数据已更新，未刷新画布</span>
+        </div>
+      )}
+
+      <div className="fs-editor-layout">
+        <EditableCanvas />
+        <PropertyPanel problems={problems} />
       </div>
-    </div>
-  );
-}
 
-/** 只读预览：全部 pending 样式，与监控画布同一 NodeCard。 */
-function GraphPreview({ graph }: { graph: WorkflowGraph }) {
-  const pos = useMemo(() => layoutGraph(graph.nodes, graph.edges), [graph]);
-  const nodes = useMemo(
-    () =>
-      graph.nodes.map((n) => ({
-        id: n.id,
-        type: 'agent' as const,
-        position: pos.get(n.id) ?? { x: 0, y: 0 },
-        data: { id: n.id, agent: n.agent, status: 'pending' as const },
-      })),
-    [graph, pos],
-  );
-  const edges: Edge[] = useMemo(
-    () =>
-      graph.edges.map((e) => ({
-        id: `${e.from}->${e.to}`,
-        source: e.from,
-        target: e.to,
-        type: 'smoothstep',
-        label: e.when,
-      })),
-    [graph],
-  );
-
-  if (graph.nodes.length === 0) {
-    return <div className="fs-muted fs-preview">未从 YAML 解析到节点（检查顶层 nodes: 段）</div>;
-  }
-  return (
-    <div className="fs-preview">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        fitView
-        proOptions={{ hideAttribution: true }}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable={false}
-        minZoom={0.2}
-      />
+      {yamlOpen && (
+        <aside className="fs-yamlview" role="dialog" aria-label="YAML 源码">
+          <div className="fs-yamlview__head">
+            <h3>YAML 源码</h3>
+            <span className="fs-yamlview__note">图形编辑后导出会重排格式、注释不保留</span>
+            <div className="fs-yamlview__headbtns">
+              <button type="button" className="fs-btn fs-btn--ghost" onClick={refreshYamlDraft}>
+                刷新
+              </button>
+              <button type="button" className="fs-btn fs-btn--ghost" onClick={() => setYamlOpen(false)}>
+                关闭
+              </button>
+            </div>
+          </div>
+          <div className="fs-yamlview__body">
+            <textarea
+              aria-label="YAML 内容"
+              spellCheck={false}
+              value={yamlDraft}
+              onChange={(e) => setYamlDraft(e.target.value)}
+            />
+          </div>
+          {yamlErrors.length > 0 && (
+            <div className="fs-yamlview__errors">
+              {yamlErrors.map((e, i) => (
+                <div key={i} className="fs-error-text">
+                  {e}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="fs-yamlview__foot">
+            <button type="button" className="fs-btn fs-btn--primary" onClick={applyYamlDraft}>
+              应用到画布
+            </button>
+          </div>
+        </aside>
+      )}
     </div>
   );
 }
