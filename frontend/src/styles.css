@@ -1175,3 +1175,153 @@ body {
   stroke: var(--accent);
   stroke-dasharray: 6 4;
 }
+
+/* --- 属性面板（M2a Task 5）：三态表单（节点/连线/设置） --- */
+
+.fs-prop {
+  width: 320px;
+  flex: none;
+  background: var(--surface-2);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fs-prop__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.fs-prop__title {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.fs-prop__empty {
+  padding: 28px 4px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 13px;
+}
+
+/* 表单行：label 包裹控件（保证 getByLabelText 可达），控件占满一行 */
+.fs-form-row {
+  margin-bottom: 12px;
+}
+
+.fs-form-label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.fs-form-input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+textarea.fs-form-input {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  resize: vertical;
+}
+
+select.fs-form-input {
+  cursor: pointer;
+}
+
+.fs-form-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(77, 141, 250, 0.22);
+}
+
+/* 校验失败红框（output_schema JSON / raw when 表达式） */
+.fs-form-input--error,
+.fs-form-input--error:focus {
+  border-color: var(--failed);
+  box-shadow: 0 0 0 3px rgba(249, 112, 102, 0.18);
+}
+
+/* 就地错误/提示（查重、JSON 解析失败等），配合 fs-error-text 红字 */
+.fs-form-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* 双列行（retry 两分量 / 操作符 + 值） */
+.fs-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 10px;
+}
+
+/* raw when 表达式折叠区 */
+.fs-prop__raw {
+  margin-bottom: 12px;
+}
+
+.fs-prop__raw summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.fs-prop__raw[open] summary {
+  color: var(--text);
+}
+
+.fs-prop__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* params 键值行：参数名 + 参数值 + 行删除 */
+.fs-params-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.fs-params-row__field {
+  flex: 1;
+  min-width: 0;
+}
+
+.fs-params-row .fs-btn {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+/* 底部公共校验区（validateWorkflow 的 problems） */
+.fs-prop__problems {
+  flex: none;
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  font-size: 12.5px;
+  line-height: 1.8;
+  max-height: 180px;
+  overflow-y: auto;
+}
