@@ -58,6 +58,20 @@ describe('validateWorkflow：镜像后端规则', () => {
     expect(validateWorkflow(badPath).some((m) => m.includes('when'))).toBe(true);
   });
 
+  it('重复 id 时只报重复错误（结构错误抑制误报环）', () => {
+    const dupOnly = base();
+    dupOnly.nodes[1].id = 'a';
+    dupOnly.edges = []; // 悬空边另算，此处隔离重复 id 场景
+    expect(validateWorkflow(dupOnly)).toEqual(['重复节点 id: a']);
+  });
+
+  it('仅存在环时照常报环（且不误伤其他规则）', () => {
+    const cycle = base();
+    cycle.edges.push({ from: 'b', to: 'a' });
+    expect(validateWorkflow(cycle)).toHaveLength(1);
+    expect(validateWorkflow(cycle).some((m) => m.includes('环'))).toBe(true);
+  });
+
   it('version < 1 报错', () => {
     const v0 = base();
     v0.version = 0;

@@ -1,6 +1,6 @@
 // 工作流 YAML 的严格解析/序列化（yaml@2 包驱动），与后端 WorkflowDef serde
-// 线格式对齐：顶层 {meta, params, nodes, edges}（后端 deny_unknown_fields，
-// 未知顶层键将被拒绝）。设计取舍（控制器裁定）：
+// 线格式对齐：顶层 {meta, params, on_node_failure, nodes, edges}（后端
+// deny_unknown_fields，未知顶层键将被拒绝）。设计取舍（控制器裁定）：
 //   - 本模块只做【结构】校验（类型/形状），语义校验（id 唯一/引用/环/when
 //     语法）归 lib/validate.ts，两者合起来构成保存门槛；
 //   - retry/timeout_ms/output_schema 透传不深校验——后端 serde 权威；
@@ -32,6 +32,8 @@ export interface WorkflowModel {
   name: string;
   version: number;
   params: Record<string, string | number | boolean>;
+  /** 节点失败策略（透传，不深校验）：`abort_run`（默认，缺省同义）或 `continue_independent`。 */
+  on_node_failure?: string;
   nodes: NodeModel[];
   edges: EdgeModel[];
 }
@@ -88,6 +90,16 @@ export function parseWorkflowModel(yaml: string): { model?: WorkflowModel; error
         errors.push(`params.${k} 的值必须为标量（字符串/数字/布尔）`);
       }
     }
+  }
+
+  // on_node_failure：可选字符串透传（abort_run | continue_independent 的取值合法性由后端裁决）
+  let on_node_failure: string | undefined;
+  if (root.on_node_failure == null) {
+    // 缺省不携带（后端 None 同 abort_run）
+  } else if (typeof root.on_node_failure !== 'string') {
+    errors.push('on_node_failure 必须为字符串（abort_run | continue_independent）');
+  } else {
+    on_node_failure = root.on_node_failure;
   }
 
   // nodes：可缺省/空；存在时必须为数组，每项 id/agent 为字符串、prompt 可省默认 ''
@@ -149,16 +161,19 @@ export function parseWorkflowModel(yaml: string): { model?: WorkflowModel; error
   }
 
   if (errors.length > 0) return { errors };
-  return { model: { name, version, params, nodes, edges }, errors: [] };
+  const model: WorkflowModel = { name, version, params, nodes, edges };
+  if (on_node_failure !== undefined) model.on_node_failure = on_node_failure;
+  return { model, errors: [] };
 }
 
-/** 序列化为后端可解析的 YAML（与 WorkflowDef serde 对齐：meta/params/nodes/edges 顶层键）。
+/** 序列化为后端可解析的 YAML（与 WorkflowDef serde 对齐：meta/params/on_node_failure/nodes/edges 顶层键）。
  *  2 空格缩进、lineWidth 0 不折叠；可选字段为 undefined 时省略；params 为空仍输出 `params: {}`。 */
 export function serializeWorkflowYaml(model: WorkflowModel): string {
   return stringify(
     {
       meta: { name: model.name, version: model.version },
       params: model.params, // 空映射也输出（{}），保持顶层键稳定
+      ...(model.on_node_failure !== undefined ? { on_node_failure: model.on_node_failure } : {}),
       nodes: model.nodes.map((n) => {
         const out: Record<string, unknown> = { id: n.id, agent: n.agent, prompt: n.prompt };
         if (n.output_schema !== undefined) out.output_schema = n.output_schema;
@@ -176,7 +191,7 @@ export function serializeWorkflowYaml(model: WorkflowModel): string {
   );
 }
 
-const KNOWN_TOP_KEYS = new Set(['meta', 'params', 'nodes', 'edges']);
+const KNOWN_TOP_KEYS = new Set(['meta', 'params', 'on_node_failure', 'nodes', 'edges']);
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);

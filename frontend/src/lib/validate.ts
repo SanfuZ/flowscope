@@ -21,11 +21,13 @@ export function validateWorkflow(model: WorkflowModel): string[] {
 
   // 节点 id 非空且唯一（镜像 workflow.rs，另加非空检查）
   const ids = new Set<string>();
+  let structuralError = false; // 重复 id / 悬空引用会破坏 Kahn 入度表
   for (const n of model.nodes) {
     if (typeof n.id !== 'string' || n.id.trim() === '') {
       errors.push(`节点 id 不能为空（agent: ${n.agent}）`);
     } else if (ids.has(n.id)) {
       errors.push(`重复节点 id: ${n.id}`);
+      structuralError = true;
     } else {
       ids.add(n.id);
     }
@@ -38,6 +40,7 @@ export function validateWorkflow(model: WorkflowModel): string[] {
   for (const e of model.edges) {
     if (!ids.has(e.from) || !ids.has(e.to)) {
       errors.push(`边引用不存在的节点: ${e.from} -> ${e.to}`);
+      structuralError = true;
     }
     if (e.when !== undefined) {
       const whenErr = checkWhen(e.when);
@@ -47,8 +50,10 @@ export function validateWorkflow(model: WorkflowModel): string[] {
     }
   }
 
-  // Kahn 拓扑排序判环（含自环）。悬空边已单独报错，此处跳过以免污染入度表
-  //（后端在环检测前已对悬空边提前返回 Err，这里等价）。
+  // Kahn 拓扑排序判环（含自环）。存在重复 id / 悬空引用时入度表已被破坏
+  //（indeg 按键去重会使 seen < nodes.length 恒成立，环必误报），此时跳过
+  // 环检测只报结构错误——后端同样在环检测前对这些情况提前返回 Err。
+  if (structuralError) return errors;
   const indeg = new Map<string, number>();
   const adj = new Map<string, string[]>();
   for (const n of model.nodes) indeg.set(n.id, 0);

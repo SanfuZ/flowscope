@@ -131,6 +131,29 @@ describe('parseWorkflowModel / serializeWorkflowYaml', () => {
     expect(withNode.model!.nodes[0].prompt).toBe('');
   });
 
+  it('on_node_failure：解析透传 + 往返保真；不含该键时序列化也不输出', () => {
+    const withOnf = parseWorkflowModel(
+      'meta: {name: x}\nparams: {week: W38}\non_node_failure: continue_independent\nnodes:\n  - id: a\n    agent: m\n',
+    );
+    expect(withOnf.errors).toEqual([]);
+    expect(withOnf.model!.on_node_failure).toBe('continue_independent');
+    const back = parseWorkflowModel(serializeWorkflowYaml(withOnf.model!));
+    expect(back.errors).toEqual([]);
+    expect(back.model).toEqual(withOnf.model);
+    expect(back.model!.on_node_failure).toBe('continue_independent');
+    // 顶层键顺序：on_node_failure 位于 params 之后、nodes 之前
+    const lines = serializeWorkflowYaml(withOnf.model!).split('\n');
+    const topKeys = lines.filter((l) => /^[a-z_]+:/.test(l)).map((l) => l.replace(/:.*/, ''));
+    expect(topKeys).toEqual(['meta', 'params', 'on_node_failure', 'nodes', 'edges']);
+
+    const without = parseWorkflowModel('meta: {name: x}\nnodes:\n  - id: a\n    agent: m\n');
+    expect(without.model!.on_node_failure).toBeUndefined();
+    const back2 = parseWorkflowModel(serializeWorkflowYaml(without.model!));
+    expect(back2.errors).toEqual([]);
+    expect(back2.model).toEqual(without.model);
+    expect(back2.model!.on_node_failure).toBeUndefined();
+  });
+
   it('meta.name 非空 / meta.version 非数字 / params 非标量值 → errors 非空', () => {
     expect(parseWorkflowModel('meta: {name: "", version: 1}\n').errors.length).toBeGreaterThan(0);
     expect(parseWorkflowModel('meta: {name: x, version: "3"}\n').errors.length).toBeGreaterThan(0);
