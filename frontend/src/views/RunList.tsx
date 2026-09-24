@@ -12,6 +12,18 @@ export function fmtTime(s: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? s : d.toLocaleString();
 }
 
+/** 运行时长：started/ended 之差（秒级精度，来自 sqlite 秒级时间戳）。 */
+export function fmtDuration(startedAt: string | null, endedAt: string | null): string {
+  if (!startedAt || !endedAt) return '—';
+  const parse = (s: string) => new Date(s.includes('T') ? s : `${s.replace(' ', 'T')}Z`).getTime();
+  const ms = parse(endedAt) - parse(startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return m >= 60 ? `${Math.floor(m / 60)}h${(m % 60).toString().padStart(2, '0')}m` : `${m}m${s.toString().padStart(2, '0')}s`;
+}
+
 export default function RunList() {
   const runsQuery = useQuery({
     queryKey: ['runs'],
@@ -36,7 +48,12 @@ export default function RunList() {
       {runsQuery.isLoading ? (
         <div className="fs-muted">加载中…</div>
       ) : rows.length === 0 ? (
-        <div className="fs-muted">暂无运行。到「工作流」页启动一个试试。</div>
+        <div className="fs-empty">
+          <div>暂无运行记录</div>
+          <div className="fs-empty__hint">
+            到「<Link className="fs-link" to="/workflows">工作流</Link>」页选择一个工作流并启动
+          </div>
+        </div>
       ) : (
         <table className="fs-table">
           <thead>
@@ -44,6 +61,7 @@ export default function RunList() {
               <th>Run ID</th>
               <th>工作流</th>
               <th>状态</th>
+              <th>耗时</th>
               <th>开始时间</th>
               <th>结束时间</th>
             </tr>
@@ -60,6 +78,7 @@ export default function RunList() {
                 <td>
                   <StatusBadge status={r.status} />
                 </td>
+                <td className="fs-time">{fmtDuration(r.started_at, r.ended_at)}</td>
                 <td className="fs-time">{fmtTime(r.started_at)}</td>
                 <td className="fs-time">{fmtTime(r.ended_at)}</td>
               </tr>

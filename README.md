@@ -5,6 +5,16 @@ ACP（Agent Client Protocol）agent 工作流的可视化监控台：用 YAML �
 日志与节点产物被统一事件化（事件溯源），前端经 SSE 实时点亮 DAG 节点并支持逐节点
 钻取查看。
 
+## 界面预览
+
+| 运行列表 | DAG 运行监控 | 节点抽屉（五 tab） |
+|:---:|:---:|:---:|
+| ![运行列表](docs/assets/run-list.png) | ![运行监控](docs/assets/run-monitor.png) | ![节点抽屉](docs/assets/node-drawer.png) |
+
+深色可观测主题：状态色（蓝运行/绿完成/红失败/橙取消）在深底上高对比呈现，
+DAG 画布为点阵网格底，运行中节点带脉冲光圈。全部颜色走 CSS 变量
+（`frontend/src/styles.css` 的 `:root`），未来可低成本扩展浅色主题。
+
 ## 架构
 
 ```

@@ -22,7 +22,10 @@ export default function WorkflowList() {
       {q.isLoading ? (
         <div className="fs-muted">加载中…</div>
       ) : rows.length === 0 ? (
-        <div className="fs-muted">暂无工作流。</div>
+        <div className="fs-empty">
+          <div>暂无工作流</div>
+          <div className="fs-empty__hint">点击右上角「新建工作流」，粘贴 YAML 定义你的第一个 DAG</div>
+        </div>
       ) : (
         <div className="fs-cards">
           {rows.map((w) => (
