@@ -1,9 +1,7 @@
 # FlowScope
 
-ACP（Agent Client Protocol）agent 工作流的可视化监控台：用 YAML 声明多节点工作流，
-每个节点驱动一条真实 ACP agent 子进程会话，执行过程中的消息流、工具调用、Plan、
-日志与节点产物被统一事件化（事件溯源），前端经 SSE 实时点亮 DAG 节点并支持逐节点
-钻取查看。
+ACP（Agent Client Protocol）agent 工作流的可视化监控台：把"黑盒"的 agent 会话变成
+看得见的工作流——每个节点在做什么、进展到哪一步、为什么失败，一目了然。
 
 ## 界面预览
 
@@ -11,9 +9,151 @@ ACP（Agent Client Protocol）agent 工作流的可视化监控台：用 YAML �
 |:---:|:---:|:---:|
 | ![运行列表](docs/assets/run-list.png) | ![运行监控](docs/assets/run-monitor.png) | ![节点抽屉](docs/assets/node-drawer.png) |
 
-深色可观测主题：状态色（蓝运行/绿完成/红失败/橙取消）在深底上高对比呈现，
-DAG 画布为点阵网格底，运行中节点带脉冲光圈。全部颜色走 CSS 变量
-（`frontend/src/styles.css` 的 `:root`），未来可低成本扩展浅色主题。
+---
+
+# 一、使用指南
+
+## 1.1 三步上手
+
+### 第 1 步：启动 FlowScope
+
+M1 阶段有两种启动方式（安装双击包是 M2 计划）：
+
+| 方式 | 命令 | 适合 |
+|---|---|---|
+| **桌面应用**（推荐） | `cargo run -p flowscope-desktop`，或直接双击 `target\debug\flowscope-desktop.exe` | 日常使用，独立窗口 |
+| **浏览器方式** | 见下方「开发者指南 · 快速开始」中启动 dev 服务器的命令，然后访问 <http://127.0.0.1:39271> | 不想开窗口、或远程查看 |
+
+桌面应用首次启动会自动在 `~/.flowscope/`（你的用户主目录下）创建数据目录，并注册
+两个示例 agent（`mock` 演示用、`bad-mock` 故意崩溃用），方便你零配置先体验。
+
+### 第 2 步：注册你的企业 agent（一次性配置）
+
+你的 agent 需要以 ACP v1 协议（JSON-RPC over stdio）运行。编辑
+`~/.flowscope/agents.toml`，为你的 agent 增加一个条目：
+
+```toml
+[agents.my-agent]                                    # key：工作流里引用的名字
+name = "我的企业 Agent"                               # 显示名（可选）
+command = ["node", "D:/agents/enterprise-agent.js", "--acp"]   # 启动命令
+cwd = "D:/agents/enterprise"                          # 工作目录（可选，也作为文件读取白名单根）
+env = { API_KEY_FILE = "secrets/api.key" }            # 环境变量（可选，凭据不落库）
+```
+
+保存后**重启 FlowScope** 生效。之后在「工作流」的 YAML 里用 `agent: my-agent`
+即可引用。
+
+> 权限说明（M1 策略）：agent 读取 `cwd` 范围内的文件自动放行，写文件与终端操作自动
+> 拒绝——每次自动决策都会出现在节点日志里，全程可审计。
+
+### 第 3 步：创建你的第一个工作流
+
+进入「工作流」→「新建工作流」，粘贴如下模板并按需修改：
+
+```yaml
+meta: {name: my-flow, version: 1}     # 名字与版本
+
+params:                               # 启动时可覆盖的参数
+  topic: "本周销售数据"
+
+nodes:                                # 每个节点 = 一次独立的 agent 会话
+  - id: collect                       # 节点唯一 id
+    agent: my-agent                   # 引用 agents.toml 里的 key
+    prompt: "收集 {{ params.topic }}，输出 JSON：{\"ok\": bool, \"path\": str}"
+
+  - id: analyze
+    agent: my-agent
+    prompt: "分析以下数据：{{ nodes.collect.output }}"   # 引用上游节点的输出
+    output_schema:                    # 可选：约束上游输出/本节点产出为结构化 JSON
+      type: object
+      required: [ok]
+      properties: {ok: {type: boolean}}
+    retry: {max: 2, backoff_ms: 3000} # 可选：失败自动重试
+    timeout_ms: 600000                # 可选：超时（毫秒）
+
+  - id: report
+    agent: my-agent
+    prompt: "基于分析结果写周报：{{ nodes.analyze.output }}"
+
+edges:                                # 执行顺序与条件
+  - {from: collect, to: analyze}
+  - {from: analyze, to: report, when: "output.ok == true"}  # 条件不满足则 report 被跳过
+```
+
+点「保存」，画布会显示 DAG 预览。**建议先启动内置的 `weekly-report` 示例**（使用
+mock agent，无需配置）跑通全流程，再替换成你的真实 agent。
+
+## 1.2 日常使用
+
+### 启动一次运行
+
+「工作流」→ 点开工作流卡片 → 在参数框填写/修改 JSON 参数（如
+`{"topic": "本月数据"}`，留空 `{}` 用默认值）→ 点「**启动运行**」→ 自动跳转监控页。
+
+### 读懂监控页
+
+**节点六种状态**：
+
+| 状态 | 颜色 | 含义 |
+|---|---|---|
+| 待运行 | 灰 | 排队中，等上游完成 |
+| 运行中 | 蓝 + 脉冲光圈 | agent 正在执行；节点上同时显示已运行时长和当前工具名 |
+| 完成 | 绿 | 本节点成功 |
+| 失败 | 红 | 失败（悬停/抽屉可见原因） |
+| 已取消 | 橙 | 被手动取消 |
+| 跳过 | 灰虚线 | 条件边未满足，本节点（及其下游）未执行 |
+
+**顶栏**：运行 ID、总状态徽章、`● SSE 已连接`（实时通道指示，断线会显示橙色横幅
+并自动重连，重连期间内容暂停更新）、「取消运行」按钮。
+
+**点击任意节点**打开右侧抽屉，五个标签页回答五个问题：
+
+| Tab | 回答的问题 |
+|---|---|
+| 消息 | agent 到现在"说"了什么？（思考过程以折叠块显示） |
+| 工具 | agent 调用了哪些工具？各自什么状态？ |
+| Plan | agent 自己列的子任务清单，完成到第几条？ |
+| 日志 | agent 进程的原始输出（stderr），排查崩溃用 |
+| 输入输出 | 节点产出的结构化结果（输入回显为 M2 计划） |
+
+### 失败了怎么排查
+
+1. 运行列表里找红色 `failed` 记录，点进去；
+2. 点红色节点 → 「日志」tab 看 agent 进程的原始输出（崩溃时会带 stderr 尾部）；
+3. 「消息」tab 看 agent 失败前说了什么；
+4. 若配置了 `retry`，会先自动重试（节点上可见重试次数），重试耗尽才标记失败。
+
+### 运行历史
+
+「运行」页每 3 秒自动刷新，按时间倒序列出所有运行：状态、**耗时**、起止时间。
+点 Run ID 可随时回看任何一次历史运行的完整监控页（事件全部存档，回看与实时同构）。
+
+## 1.3 你的数据在哪
+
+桌面版与浏览器版共用同一个数据目录 `~/.flowscope/`：
+
+| 文件/目录 | 内容 |
+|---|---|
+| `flowscope.db` | 全部工作流、运行记录与事件（SQLite 单文件，可直接备份迁移） |
+| `agents.toml` | 你的 agent 注册表 |
+| `scripts/` | 示例 agent 的行为脚本 |
+
+dev 服务器（浏览器方式）默认用仓库内 `target/dev-home/`，互不干扰。
+
+## 1.4 常见问题
+
+| 现象 | 原因与处理 |
+|---|---|
+| 页面打不开 | 服务没在运行。桌面版重开应用；浏览器方式按开发者指南命令重新启动 |
+| 顶部橙色"连接断开"横幅 | SSE 断线，会自动重连补齐缺口，无需操作；持续不恢复则刷新页面 |
+| 节点一直"待运行" | 上游节点未完成或条件边不满足（检查边上的 `when`） |
+| agent 起不来 | 检查 `agents.toml` 的 `command` 路径与 `cwd` 是否正确，在终端手动跑一遍该命令 |
+| 服务重启后运行显示 `interrupted` | 上次退出时未结束的运行被标记中断（M1 不支持续跑，可重新发起） |
+| 想换端口（浏览器方式） | 启动命令加 `--port <端口号>` |
+
+---
+
+# 二、开发者指南
 
 ## 架构
 
@@ -37,8 +177,8 @@ DAG 画布为点阵网格底，运行中节点带脉冲光圈。全部颜色走 
                ▲
                │ 进程内组装（共用 bootstrap）
 ┌──────────────┴──────────────┐
-│ 宿主：dev 启动器（独立进程）    │
-│ 或 Tauri 2 桌面壳（随机端口）  │
+│ 宿主：dev 启动器（独立进程）   │
+│ 或 Tauri 桌面壳（apps/desktop）│
 └─────────────────────────────┘
 ```
 
@@ -51,7 +191,7 @@ DAG 画布为点阵网格底，运行中节点带脉冲光圈。全部颜色走 
   ReactFlow 实时 DAG + 节点抽屉五 tab），由后端静态托管，同源直连。
 - **apps/desktop**：Tauri 2 壳，进程内嵌引擎，窗口直连本地回环。
 
-## 快速开始
+## 快速开始（开发环境）
 
 前置：Rust（stable）、Node.js 20+ 与 npm。
 
@@ -71,32 +211,7 @@ cargo run -p flowscope-core --bin dev -- --port 39271 --home target/dev-home \
   --frontend-dist frontend/dist --mock-agent-bin target/debug/flowscope-mock-agent.exe
 ```
 
-打开 <http://127.0.0.1:39271>，进入「工作流」→ 点开 `weekly-report` → 「启动运行」，
-即可在监控页看到节点依次点亮与抽屉内容。
-
-桌面版（Tauri 壳，进程内嵌引擎）：
-
-```bash
-cargo run -p flowscope-desktop
-```
-
-## 注册企业 agent
-
-agent 以 `agents.toml` 注册（位于 home 目录，dev 启动器默认 `target/dev-home/`，
-桌面版为系统数据目录；文件缺失且提供了 `--mock-agent-bin` 时会自动生成 mock 示例）。
-每个条目声明 spawn 命令与可选的 cwd / env：
-
-```toml
-[agents.enterprise]
-command = ["node", "enterprise-agent.js", "--acp"]   # spawn 命令（ACP v1 over stdio）
-cwd = "D:/agents/enterprise"
-env = { API_KEY_FILE = "secrets/api.key" }            # 值仅支持文件引用/明文，永不入库
-name = "企业 Agent"
-```
-
-完整字段与握手语义（`initialize` 后读取 agent 声明的 `protocolVersion`、
-`authMethods`、`modes` 等）见设计文档 §3.1：
-`docs/superpowers/specs/2026-09-22-flowscope-design.md`。
+打开 <http://127.0.0.1:39271>。桌面版开发：`cargo run -p flowscope-desktop`。
 
 ## 测试矩阵
 
@@ -104,35 +219,37 @@ name = "企业 Agent"
 |---|---|---|
 | Rust 单元/集成 | `cargo test` | DSL 解析/校验、引擎调度与重试、ACP 会话层（含子进程 wire 级）、事件/存储/SSE、脱敏纯函数 `events::redact()`、mock-agent 脚本机 |
 | 前端单元 | `cd frontend && npm test` | 事件 reducer、图解析/布局、NodeCard/NodeDrawer 组件 |
-| E2E 冒烟 | `cd frontend && npm run e2e` | Playwright 拉起 dev bin：mock 工作流全链路（3 节点点亮 + 抽屉消息/工具 + 终态 finished）与崩溃注入（节点红 + run failed） |
+| E2E 冒烟 | `cd frontend && npm run e2e` | Playwright 拉起 dev bin：mock 工作流全链路与崩溃注入 |
 
-E2E 首次运行需先 `npx playwright install chromium`（webServer 会自动构建
-mock-agent 并在 39271 端口起 dev bin）。
+E2E 首次运行需先 `npx playwright install chromium`。
 
-## M1 范围与 M2 展望
+## 设计文档
 
-M1（当前）交付：core / mock-agent / 桌面壳三件套、ACP v1 会话层、工作流 DSL 与
-调度引擎（条件边、重试、参数渲染）、SQLite 事件溯源 + SSE、四个核心视图
-（运行列表 / 工作流列表 / 详情编辑 / 运行监控）。
+- 设计文档（spec）：`docs/superpowers/specs/2026-09-22-flowscope-design.md`
+- M1 实施计划：`docs/superpowers/plans/2026-09-22-flowscope-m1.md`
+- M2 待办清单：`docs/superpowers/plans/2026-09-23-flowscope-m2-backlog.md`
 
-- 设计文档：`docs/superpowers/specs/2026-09-22-flowscope-design.md`
-- 实施计划：`docs/superpowers/plans/2026-09-22-flowscope-m1.md`
+---
 
-M2 候选方向（详见上述文档）：渲染后 prompt 回显、真实 agent 健康探活、桌面安装包
-与 CSP 收紧、`session/load` 会话复用、脱敏规则接线、更完整的工作流 DSL 子集。
+# 三、当前版本边界
+
+## M1（当前）交付
+
+core / mock-agent / 桌面壳三件套、ACP v1 会话层、工作流 DSL 与调度引擎（条件边、
+重试、参数渲染）、SQLite 事件溯源 + SSE、四个核心视图（运行列表 / 工作流列表 /
+详情编辑 / 运行监控）。
+
+## M2 计划（节选）
+
+独立服务器 + Web 部署（远程承载引擎）、运行回放与瀑布时间线、**画布图形编辑器**
+（拖拽增删节点/连线，无需写 YAML）、渲染后 prompt 回显、agent 健康探活、桌面
+安装包。完整清单见 M2 待办清单。
 
 ## 已知限制（M1）
 
-- **渲染后 prompt 不回显**：SSE/REST 均不回传节点渲染后的输入 prompt，抽屉
-  「输入输出」tab 的输入侧为 M2 占位（后端缺口已在任务记录中登记）。
-- **前端 YAML 图解析器较脆弱**：编辑器 DAG 预览采用逐行扫描的简化解析，对非常规
-  YAML 排版可能显示空图（原文编辑与后端解析不受影响）。
-- **agent 无健康探测**：`GET /api/agents` 恒报 `healthy: true`。
-- **桌面版未出安装包**：`bundle.active = false`，CSP 未配置，图标为占位；
-  cargo-tauri CLI 未纳入本仓流程。
-- **脱敏未接线**：spec §8 的脱敏能力 M1 已交付
-  `flowscope_core::events::redact()` 纯函数（含单测）；config 规则加载与
-  事件管道中的应用为 M2。
-- **单用户本地工具**：无鉴权 / 多租户 / 权限模型。
-- **取消语义局限**：仅支持本进程内 run 取消；进程重启后遗留 run 被标记
-  `interrupted`，再取消返回 404。
+- **渲染后 prompt 不回显**：抽屉「输入输出」tab 的输入侧为占位（M2）。
+- **前端 YAML 图解析器较脆弱**：非常规排版的 YAML 可能显示空图（编辑与执行不受影响）。
+- **agent 无健康探测**：agent 配置错误要等运行时才暴露。
+- **桌面版未出安装包**：需以命令/可执行文件方式启动。
+- **单用户本地工具**：无鉴权 / 多租户。
+- **取消语义局限**：仅支持本进程内取消；重启后遗留运行标记 `interrupted`。
