@@ -59,6 +59,29 @@ describe('PropertyPanel：node 态', () => {
     expect(useEditorStore.getState().dirty).toBe(true);
   });
 
+  it('prompt 失焦立即冲刷提交（绕过防抖：点画布即失焦，输入不丢；防抖已清除不二次提交）', async () => {
+    vi.useFakeTimers();
+    try {
+      useEditorStore.getState().loadBlank();
+      useEditorStore.getState().setSelection({ type: 'node', id: 'step1' });
+      await renderNodePanel();
+      const ta = screen.getByLabelText('Prompt') as HTMLTextAreaElement;
+      fireEvent.change(ta, { target: { value: 'flush-me' } });
+      expect(useEditorStore.getState().model!.nodes[0]!.prompt).toBe(''); // 仍在防抖窗口
+      fireEvent.blur(ta); // 模拟点画布：失焦先于卸载
+      expect(useEditorStore.getState().model!.nodes[0]!.prompt).toBe('flush-me'); // 失焦即写回
+      expect(useEditorStore.getState().dirty).toBe(true);
+      // 挂起的防抖已被冲刷清除：推进 300ms 不产生第二次 updateNode 效果
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(useEditorStore.getState().model!.nodes[0]!.prompt).toBe('flush-me');
+      expect(useEditorStore.getState().past.length).toBe(1); // 历史仅一条（无重复提交）
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('id 与其它节点重复：即时就地红字提示，失焦仍允许提交（保存门统一拦）', async () => {
     useEditorStore.getState().loadBlank();
     const b = useEditorStore.getState().addNode('mock'); // 自动选中 node-1

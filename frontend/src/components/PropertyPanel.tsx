@@ -1,6 +1,7 @@
 // Task 5：属性面板（三态表单），由 store.selected 驱动：
 //   ① node 态 —— 节点属性：id（失焦提交，输入即时查重就地红字但仍允许提交——保存门统一拦）/
-//      agent 下拉（listAgents，onChange 提交）/ prompt（onChange 防抖 300ms 提交）/
+//      agent 下拉（listAgents，onChange 提交）/ prompt（onChange 防抖 300ms + 失焦立即冲刷，
+//      点画布丢输入的 UX 陷阱已消）/
 //      retry.max + retry.backoff_ms + timeout_ms（数字，空串 = 删除字段）/
 //      output_schema（失焦 JSON.parse：成功提交解析对象，失败红框不提交，空串删字段）/ 删除节点。
 //   ② edge 态 —— 条件边：结构化三件套（字段路径/操作符/值）任一变更即拼装 when 提交；
@@ -201,6 +202,16 @@ function NodeForm({ node }: { node: NodeModel }) {
     }, 300);
   };
 
+  /** 失焦立即冲刷挂起的防抖：点画布/切换选中必先失焦，输入不因 300ms 窗口而丢。
+   *  草稿与 store 一致（或防抖已落定）时为 no-op。 */
+  const flushPrompt = () => {
+    if (promptTimer.current !== null) {
+      window.clearTimeout(promptTimer.current);
+      promptTimer.current = null;
+    }
+    if (promptDraft !== node.prompt) updateNode(node.id, { prompt: promptDraft });
+  };
+
   const commitSchema = () => {
     const t = schemaDraft.trim();
     if (t === '') {
@@ -283,6 +294,7 @@ function NodeForm({ node }: { node: NodeModel }) {
               setPromptDraft(e.target.value);
               commitPrompt(e.target.value);
             }}
+            onBlur={flushPrompt}
           />
         </label>
       </div>
