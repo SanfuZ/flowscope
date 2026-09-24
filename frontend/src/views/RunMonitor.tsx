@@ -133,7 +133,10 @@ export default function RunMonitor() {
         <span className="fs-topbar__id" title={runId}>
           {runId}
         </span>
-        <StatusBadge status={status} />
+        {/* Task 7 授权的唯一样式外改动：给状态徽章加稳定 testid 供 e2e 断言 */}
+        <span data-testid="run-status">
+          <StatusBadge status={status} />
+        </span>
         <span className={`fs-conn ${connected ? 'fs-conn--on' : 'fs-conn--off'}`}>
           ● {connected ? 'SSE 已连接' : 'SSE 重连中'}
         </span>
