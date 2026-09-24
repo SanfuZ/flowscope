@@ -270,6 +270,45 @@ describe('setPositions / setSelection / markSaved：视图态', () => {
   });
 });
 
+describe('updateModelMeta：顶层元信息编辑（Task 5，属性面板 settings 态）', () => {
+  it('合并 name/version/params/on_node_failure 并置 dirty', () => {
+    S().loadBlank();
+    S().updateModelMeta({
+      name: 'demo',
+      version: 2,
+      params: { env: 'prod', n: 3, ok: true },
+      on_node_failure: 'continue_independent',
+    });
+    const s = S();
+    expect(s.model!.name).toBe('demo');
+    expect(s.model!.version).toBe(2);
+    expect(s.model!.params).toEqual({ env: 'prod', n: 3, ok: true });
+    expect(s.model!.on_node_failure).toBe('continue_independent');
+    expect(s.dirty).toBe(true);
+  });
+
+  it('局部补丁不动其它字段（nodes/params 原样），且进历史可撤销', () => {
+    S().loadBlank();
+    S().updateNode('step1', { prompt: 'p' });
+    S().updateModelMeta({ name: 'renamed' });
+    const m = S().model!;
+    expect(m.version).toBe(1);
+    expect(m.params).toEqual({});
+    expect(m.nodes).toEqual([{ id: 'step1', agent: 'mock', prompt: 'p' }]);
+    S().undo();
+    expect(S().model!.name).toBe('my-workflow');
+    expect(S().model!.nodes[0]!.prompt).toBe('p'); // undo 只回退元信息变更
+    S().redo();
+    expect(S().model!.name).toBe('renamed');
+  });
+
+  it('model 为空时 no-op（不抛错）', () => {
+    useEditorStore.setState({ model: null, loaded: false });
+    expect(() => S().updateModelMeta({ name: 'x' })).not.toThrow();
+    expect(S().model).toBeNull();
+  });
+});
+
 describe('toYaml：与 loadYaml 往返', () => {
   it('toYaml → loadYaml 往返', () => {
     useEditorStore.getState().loadBlank();

@@ -33,6 +33,9 @@ export interface EditorState {
   connect(from: string, to: string): void; // 已存在同向边则忽略；自环允许存入（校验层报环）
   updateEdge(from: string, to: string, patch: Partial<EdgeModel>): void;
   removeEdge(from: string, to: string): void;
+  /** 顶层元信息编辑（属性面板 settings 态）：name/version/params/on_node_failure，
+   *  与节点/边编辑同纪律（进 history、置 dirty）。 */
+  updateModelMeta(patch: Partial<Pick<WorkflowModel, 'name' | 'version' | 'params' | 'on_node_failure'>>): void;
   setPositions(next: Record<string, { x: number; y: number }>): void; // 拖拽结束批量写，不进 history
   setSelection(sel: EditorState['selected']): void; // 不进 history、不改 dirty
   markSaved(): void; // dirty=false
@@ -201,6 +204,13 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         if (edges.length === model.edges.length) return;
         const history = pushHistory();
         set({ ...history, model: { ...model, edges }, dirty: true });
+      },
+
+      updateModelMeta: (patch) => {
+        const { model } = get();
+        if (!model) return;
+        const history = pushHistory();
+        set({ ...history, model: { ...model, ...patch }, dirty: true });
       },
 
       setPositions: (next) => {
