@@ -51,27 +51,32 @@ export default function NodeCard({
   const { status } = data;
   return (
     <div className={`fs-node fs-node--${status}`} data-testid="node-card">
+      {/* handle 必须是 .fs-node 根的直接子元素、位于 .fs-node__body（落场动画
+          目标）之外：动画 transform 会连带子元素包围盒，handle 随内容缩放会让
+          连线拖拽落点在 450ms 动画窗口内漂移（e2e handleCenter 实证 miss）。 */}
       <Handle type="target" position={Position.Left} isConnectable={isConnectable} />
-      <div className="fs-node__head">
-        <span className="fs-node__agent">{data.agent || 'agent'}</span>
-        <span className="fs-node__id">{data.id}</span>
-      </div>
-      <div className="fs-node__status">
-        <span className={`fs-badge fs-badge--${status}`}>{STATUS_LABEL[status]}</span>
-        {status === 'running' && data.elapsedMs != null && (
-          <span className="fs-node__elapsed">{formatElapsed(data.elapsedMs)}</span>
+      <div className="fs-node__body">
+        <div className="fs-node__head">
+          <span className="fs-node__agent">{data.agent || 'agent'}</span>
+          <span className="fs-node__id">{data.id}</span>
+        </div>
+        <div className="fs-node__status">
+          <span className={`fs-badge fs-badge--${status}`}>{STATUS_LABEL[status]}</span>
+          {status === 'running' && data.elapsedMs != null && (
+            <span className="fs-node__elapsed">{formatElapsed(data.elapsedMs)}</span>
+          )}
+        </div>
+        {status === 'running' && data.lastToolTitle && (
+          <div className="fs-node__tool" title="最近工具">
+            ⚙ {data.lastToolTitle}
+          </div>
+        )}
+        {status === 'failed' && data.error && (
+          <div className="fs-node__error" title="失败原因">
+            ✗ {data.error}
+          </div>
         )}
       </div>
-      {status === 'running' && data.lastToolTitle && (
-        <div className="fs-node__tool" title="最近工具">
-          ⚙ {data.lastToolTitle}
-        </div>
-      )}
-      {status === 'failed' && data.error && (
-        <div className="fs-node__error" title="失败原因">
-          ✗ {data.error}
-        </div>
-      )}
       <Handle type="source" position={Position.Right} isConnectable={isConnectable} />
     </div>
   );

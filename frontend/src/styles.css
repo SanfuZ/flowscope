@@ -1544,9 +1544,12 @@ select.fs-form-input {
 }
 
 /* --- 节点落场动画（save-ux）：新增节点弹入 ---
-   RF12 的节点定位靠包裹层 transform，动画只能落在内层 .fs-node 卡片上
-   （包裹层动 transform 会与 RF 定位冲突）。fs-node--pop 挂在 RF 节点
-   包裹层 className（EditableCanvas 派生），750ms 后移除。 */
+   fs-node--pop 挂在 RF 节点包裹层 className（EditableCanvas 派生），750ms
+   后移除。动画只作用于内容区 .fs-node__body（NodeCard 中 head/status/tool/
+   error 行的包裹块，纯 block 不改变布局，padding 仍在 .fs-node 根上）：
+   RF12 包裹层与 .fs-node 根都不能动 transform——前者是 RF 节点定位，
+   后者是两个 .react-flow__handle 的定位容器，scale 会让 handle 包围盒在
+   450ms 动画窗口内漂移，e2e 拖拽连线在动画中途取 handle 中心会 miss。 */
 
 @keyframes fs-pop {
   0% {
@@ -1562,7 +1565,7 @@ select.fs-form-input {
   }
 }
 
-.react-flow__node.fs-node--pop .fs-node {
+.react-flow__node.fs-node--pop .fs-node__body {
   animation: fs-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
   transform-origin: center;
 }

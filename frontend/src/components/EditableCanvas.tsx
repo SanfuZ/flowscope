@@ -38,10 +38,13 @@ function EditCanvas() {
   const { screenToFlowPosition } = useReactFlow();
 
   // --- 落场动画（save-ux）：观测 model.nodes 的增量变化，新增节点短暂挂
-  // fs-node--pop（RF 节点包裹层 className）→ 内层 .fs-node 播放 fs-pop 弹入。
+  // fs-node--pop（RF 节点包裹层 className）→ 内容区 .fs-node__body 播放
+  // fs-pop 弹入（handle 留在 .fs-node 根，几何不受动画影响）。
   // 仅「纯增量」变化才弹（prev 非空且无删除）：初次装载 / loadYaml 整体
   // 重置（换文档、refetch 重载）不弹；撤销删除后 redo 恢复节点视为新增会弹。
-  const [popId, setPopId] = useState<string | null>(null);
+  // 一次变化里新增多个节点（如 redo 批量恢复）时收集全部新 id，共用一个
+  // 750ms 清除计时器（不再只取第一个）。
+  const [popIds, setPopIds] = useState<ReadonlySet<string>>(() => new Set());
   const knownIdsRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     const ids = new Set(model ? model.nodes.map((n) => n.id) : []);
@@ -51,18 +54,20 @@ function EditCanvas() {
     let additive = true;
     for (const id of prev) if (!ids.has(id)) additive = false;
     if (!additive) return; // 整体重置（loadYaml 换文档）不弹
-    for (const id of ids) {
-      if (!prev.has(id)) {
-        setPopId(id);
-        break;
-      }
-    }
+    const added = [...ids].filter((id) => !prev.has(id));
+    if (added.length === 0) return;
+    setPopIds((cur) => {
+      if (added.every((id) => cur.has(id))) return cur; // 已在弹入集合 → 引用不变
+      const next = new Set(cur);
+      for (const id of added) next.add(id);
+      return next;
+    });
   }, [model]);
   useEffect(() => {
-    if (popId == null) return;
-    const t = window.setTimeout(() => setPopId(null), 750);
+    if (popIds.size === 0) return;
+    const t = window.setTimeout(() => setPopIds(new Set()), 750);
     return () => window.clearTimeout(t);
-  }, [popId]);
+  }, [popIds]);
 
   // 布局兜底：仅当存在无存储坐标的节点时才跑 dagre（model/positions 引用不变则跳过）
   const layout = useMemo(() => {
@@ -77,9 +82,9 @@ function EditCanvas() {
       type: 'agent' as const,
       position: positions[n.id] ?? layout?.get(n.id) ?? { x: 0, y: 0 },
       data: { id: n.id, agent: n.agent, status: 'pending' as const },
-      className: n.id === popId ? 'fs-node--pop' : undefined,
+      className: popIds.has(n.id) ? 'fs-node--pop' : undefined,
     }));
-  }, [model, positions, layout, popId]);
+  }, [model, positions, layout, popIds]);
 
   const derivedEdges: Edge[] = useMemo(() => {
     if (!model) return [];

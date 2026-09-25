@@ -103,6 +103,14 @@ describe('EditableCanvas：palette 与画布接线', () => {
       const wrapper = container.querySelector('.react-flow__node[data-id="node-1"]')!;
       expect(wrapper).toBeTruthy();
       expect(wrapper.className).toContain('fs-node--pop');
+      // 动画目标为内容区 .fs-node__body（CSS 选择器目标），且两个 handle 是
+      // .fs-node 根的直接子元素、位于 body 之外——handle 几何不随动画缩放，
+      // 拖拽连线落点稳定（build-via-canvas e2e 回归根因的回归锚点）。
+      const body = wrapper.querySelector('.fs-node .fs-node__body');
+      expect(body).toBeTruthy();
+      expect(wrapper.querySelectorAll('.fs-node__body')).toHaveLength(1);
+      expect(body!.querySelector('.react-flow__handle')).toBeNull();
+      expect(wrapper.querySelectorAll('.fs-node > .react-flow__handle')).toHaveLength(2);
       act(() => vi.advanceTimersByTime(800));
       expect(wrapper.className).not.toContain('fs-node--pop');
     } finally {

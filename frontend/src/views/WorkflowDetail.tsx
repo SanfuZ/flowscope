@@ -155,8 +155,9 @@ export default function WorkflowDetail() {
   // App.tsx 已迁移 createBrowserRouter）。shouldBlock 实时读 store 而非闭包
   // 捕获渲染值——保存 onSuccess 里 markSaved() 后同步 navigate 时，闭包里的
   // dirty 还是旧值，getState() 才读到已清零的脏态（e2e 成功路径不触发拦截）。
-  // allowNextNavRef：启动运行是明确的离开意图，跳转前置 true 一次性放行
-  //（语义上不是「已保存」，只是「用户明确选择离开」），失败/受阻时复位。
+  // allowNextNavRef：启动运行是明确的离开意图，startRun 成功后紧贴 navigate
+  // 置 true 一次性放行（语义上不是「已保存」，只是「用户明确选择离开」）；
+  // 请求进行中不置位（旁路窗口最小），失败路径不进入放行、天然复位。
   const allowNextNavRef = useRef(false);
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
     currentLocation.pathname !== nextLocation.pathname &&
@@ -170,15 +171,17 @@ export default function WorkflowDetail() {
   const launch = async () => {
     const m = useEditorStore.getState().model;
     if (m == null) return;
-    allowNextNavRef.current = true; // 明确离开：放行本次路由跳转（不伪装已保存）
     setLaunching(true);
     setLaunchError('');
     try {
       const res = await api.startRun(id, m.params ?? {});
+      // 放行标志在启动成功后、紧贴 navigate 才置 true：旁路窗口最小化
+      //（请求期间脏态导航仍走拦截确认），失败路径根本不会置位，天然复位。
+      allowNextNavRef.current = true; // 明确离开：放行本次路由跳转（不伪装已保存）
       navigate(`/runs/${res.run_id}`);
     } catch (e) {
       setLaunchError(e instanceof Error ? e.message : String(e));
-      allowNextNavRef.current = false; // 未离开：恢复拦截语义
+      allowNextNavRef.current = false; // 未离开：防御性复位（正常不会置位）
       setLaunching(false);
     }
   };
