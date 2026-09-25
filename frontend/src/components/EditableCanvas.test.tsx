@@ -7,7 +7,7 @@
 // api 客户端整体 mock（仅 listAgents 被面板消费）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactFlowProvider } from '@xyflow/react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import { useEditorStore } from '../store/editorStore';
@@ -76,6 +76,38 @@ describe('EditableCanvas：palette 与画布接线', () => {
     expect(s.model!.nodes.length).toBe(2);
     expect(s.model!.nodes[1]!.agent).toBe('mock');
     expect(s.selected?.type).toBe('node');
+  });
+
+  it('save-ux：面板整行点击即可添加（按钮不冒泡双触发）', async () => {
+    useEditorStore.getState().loadBlank();
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    const { container } = renderCanvas();
+    const add = await screen.findByTestId('palette-add-mock');
+    const row = container.querySelector('[data-agent-key="mock"]')!;
+    expect(row).toBeTruthy();
+    fireEvent.click(row); // 点行（不点按钮）
+    expect(useEditorStore.getState().model!.nodes.length).toBe(2);
+    fireEvent.click(add); // 点按钮：stopPropagation 防行 onClick 再加一次
+    expect(useEditorStore.getState().model!.nodes.length).toBe(3);
+    expect(useEditorStore.getState().model!.nodes[2]!.agent).toBe('mock');
+  });
+
+  it('save-ux：新增节点落场动画 fs-node--pop 750ms 后移除', async () => {
+    useEditorStore.getState().loadBlank();
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    const { container } = renderCanvas();
+    const add = await screen.findByTestId('palette-add-mock'); // 真定时器下等渲染就绪
+    vi.useFakeTimers(); // 之后调度的 750ms 清除计时器走假时钟
+    try {
+      fireEvent.click(add);
+      const wrapper = container.querySelector('.react-flow__node[data-id="node-1"]')!;
+      expect(wrapper).toBeTruthy();
+      expect(wrapper.className).toContain('fs-node--pop');
+      act(() => vi.advanceTimersByTime(800));
+      expect(wrapper.className).not.toContain('fs-node--pop');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('palette 空态：未注册 agent 提示编辑 agents.toml', async () => {

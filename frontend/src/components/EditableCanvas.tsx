@@ -8,7 +8,7 @@
 // （derived 引用变化）再整体同步回来；拖拽结束才批量写 store.positions。
 // ReactFlow 须在 <ReactFlowProvider> 内取 useReactFlow 实例：onDrop 的
 // screenToFlowPosition 接 clientX/clientY（RF12 内部自扣容器 bounds）。
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   Controls,
@@ -37,6 +37,33 @@ function EditCanvas() {
 
   const { screenToFlowPosition } = useReactFlow();
 
+  // --- 落场动画（save-ux）：观测 model.nodes 的增量变化，新增节点短暂挂
+  // fs-node--pop（RF 节点包裹层 className）→ 内层 .fs-node 播放 fs-pop 弹入。
+  // 仅「纯增量」变化才弹（prev 非空且无删除）：初次装载 / loadYaml 整体
+  // 重置（换文档、refetch 重载）不弹；撤销删除后 redo 恢复节点视为新增会弹。
+  const [popId, setPopId] = useState<string | null>(null);
+  const knownIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const ids = new Set(model ? model.nodes.map((n) => n.id) : []);
+    const prev = knownIdsRef.current;
+    knownIdsRef.current = ids;
+    if (prev == null || prev.size === 0) return; // 初次观测 / 空画布 → 装载不弹
+    let additive = true;
+    for (const id of prev) if (!ids.has(id)) additive = false;
+    if (!additive) return; // 整体重置（loadYaml 换文档）不弹
+    for (const id of ids) {
+      if (!prev.has(id)) {
+        setPopId(id);
+        break;
+      }
+    }
+  }, [model]);
+  useEffect(() => {
+    if (popId == null) return;
+    const t = window.setTimeout(() => setPopId(null), 750);
+    return () => window.clearTimeout(t);
+  }, [popId]);
+
   // 布局兜底：仅当存在无存储坐标的节点时才跑 dagre（model/positions 引用不变则跳过）
   const layout = useMemo(() => {
     if (!model || model.nodes.every((n) => positions[n.id] != null)) return null;
@@ -50,8 +77,9 @@ function EditCanvas() {
       type: 'agent' as const,
       position: positions[n.id] ?? layout?.get(n.id) ?? { x: 0, y: 0 },
       data: { id: n.id, agent: n.agent, status: 'pending' as const },
+      className: n.id === popId ? 'fs-node--pop' : undefined,
     }));
-  }, [model, positions, layout]);
+  }, [model, positions, layout, popId]);
 
   const derivedEdges: Edge[] = useMemo(() => {
     if (!model) return [];

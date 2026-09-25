@@ -1,6 +1,9 @@
 // 应用壳：react-query Provider + 路由（/、/workflows、/workflows/:id、/runs/:id）+ 侧栏。
+// save-ux：BrowserRouter → createBrowserRouter + RouterProvider（data router）。
+// 原因：WorkflowDetail 的 useBlocker（未保存离开拦截）在 react-router 6.19+
+// 仅于 data router 上下文可用（useDataRouterContext 会抛错），路由结构不变。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Navigate, NavLink, Route, Routes } from 'react-router-dom';
+import { createBrowserRouter, Navigate, NavLink, Outlet, RouterProvider } from 'react-router-dom';
 import { ReactNode } from 'react';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
@@ -48,42 +51,55 @@ function SideLink({ to, end, icon, children }: { to: string; end?: boolean; icon
   );
 }
 
+/** 布局壳：侧栏 + <Outlet/>（data router 的嵌套路由出口）。 */
+function AppShell() {
+  return (
+    <div className="fs-app">
+      <aside className="fs-side">
+        <div className="fs-side__logo">
+          <span className="fs-logo-mark">F</span>
+          <span className="fs-side__name">FlowScope</span>
+          <span className="fs-side__ver">M1</span>
+        </div>
+        <nav className="fs-side__nav">
+          <SideLink to="/" end icon={<Icon path={ICON_RUN} />}>
+            运行
+          </SideLink>
+          <SideLink to="/workflows" icon={<Icon path={ICON_FLOW} />}>
+            工作流
+          </SideLink>
+        </nav>
+        <div className="fs-side__foot">
+          ACP 工作流可视化监控
+          <br />
+          单机模式 · 事件溯源
+        </div>
+      </aside>
+      <main className="fs-main">
+        <Outlet />
+      </main>
+    </div>
+  );
+}
+
+const router = createBrowserRouter([
+  {
+    path: '/',
+    element: <AppShell />,
+    children: [
+      { index: true, element: <RunList /> },
+      { path: 'workflows', element: <WorkflowList /> },
+      { path: 'workflows/:id', element: <WorkflowDetail /> },
+      { path: 'runs/:id', element: <RunMonitor /> },
+      { path: '*', element: <Navigate to="/" replace /> },
+    ],
+  },
+]);
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <div className="fs-app">
-          <aside className="fs-side">
-            <div className="fs-side__logo">
-              <span className="fs-logo-mark">F</span>
-              <span className="fs-side__name">FlowScope</span>
-              <span className="fs-side__ver">M1</span>
-            </div>
-            <nav className="fs-side__nav">
-              <SideLink to="/" end icon={<Icon path={ICON_RUN} />}>
-                运行
-              </SideLink>
-              <SideLink to="/workflows" icon={<Icon path={ICON_FLOW} />}>
-                工作流
-              </SideLink>
-            </nav>
-            <div className="fs-side__foot">
-              ACP 工作流可视化监控
-              <br />
-              单机模式 · 事件溯源
-            </div>
-          </aside>
-          <main className="fs-main">
-            <Routes>
-              <Route path="/" element={<RunList />} />
-              <Route path="/workflows" element={<WorkflowList />} />
-              <Route path="/workflows/:id" element={<WorkflowDetail />} />
-              <Route path="/runs/:id" element={<RunMonitor />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </main>
-        </div>
-      </BrowserRouter>
+      <RouterProvider router={router} />
     </QueryClientProvider>
   );
 }

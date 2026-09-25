@@ -1,5 +1,8 @@
 // agent 节点面板：浮在编辑画布左上的卡片（绝对定位见 styles.css）。
-// 每项双触发：
+// 每项三触发（save-ux 起整行可点）：
+//   - 整行点击（li onClick → addNode(key)）：行即按钮——cursor pointer、
+//     hover 高亮、按压微缩（见 .fs-palette__item 样式）；data-agent-key
+//     供测试直接定位行；行内「添加」按钮 stopPropagation 防止双触发；
 //   - HTML5 拖拽（dataTransfer 'application/flowscope-agent'，text/plain 兜底）
 //     → 画布 onDrop 以落点坐标 addNode；
 //   - 「添加」按钮（键盘可达 / e2e 路径）→ addNode(key)，不传位置，
@@ -30,7 +33,10 @@ export default function Palette() {
             <li
               key={a.key}
               className="fs-palette__item"
+              data-agent-key={a.key}
+              title={`添加 ${a.name} 到画布`}
               draggable
+              onClick={() => addNode(a.key)}
               onDragStart={(e) => {
                 e.dataTransfer.setData('application/flowscope-agent', a.key);
                 e.dataTransfer.setData('text/plain', a.key);
@@ -41,9 +47,12 @@ export default function Palette() {
               </span>
               <button
                 type="button"
-                className="fs-btn fs-btn--ghost fs-palette__add"
+                className="fs-btn fs-palette__add"
                 data-testid={`palette-add-${a.key}`}
-                onClick={() => addNode(a.key)}
+                onClick={(e) => {
+                  e.stopPropagation(); // 行 onClick 同为 addNode，阻断冒泡防双触发
+                  addNode(a.key);
+                }}
               >
                 添加
               </button>

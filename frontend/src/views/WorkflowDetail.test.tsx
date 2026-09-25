@@ -1,12 +1,13 @@
 // Task 6：WorkflowDetail 画布为主交互重写测试。渲染整页（EditableCanvas +
-// PropertyPanel + 工具栏），MemoryRouter 定路由参数 / ReactFlowProvider 供画布
-// 取实例 / QueryClientProvider 供 react-query；api 客户端整体 mock。
+// PropertyPanel + 工具栏），createMemoryRouter data router 定路由参数（save-ux
+// 的 useBlocker 需要）/ ReactFlowProvider 供画布取实例 / QueryClientProvider
+// 供 react-query；api 客户端整体 mock。
 // store 用真实 zustand 单例（afterEach 还原），禁用态断言用 .disabled 属性
 //（项目未引入 jest-dom，沿用既有测试约定）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactFlowProvider } from '@xyflow/react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import { parseWorkflowGraph } from '../api/graph';
@@ -49,23 +50,27 @@ nodes:
 edges: []
 `;
 
+// 渲染到 data router（createMemoryRouter + RouterProvider）：save-ux 的
+// useBlocker（未保存离开拦截）在 react-router 6.19+ 仅于 data router 上下文
+// 可用。返回 render 结果 + router（供用例直接 router.navigate 触发拦截）。
 function renderAt(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const router = createMemoryRouter(
+    [
+      { path: '/workflows/:id', element: <WorkflowDetail /> },
+      { path: '/runs/:id', element: <div data-testid="run-probe">run page</div> },
+      { path: '/other', element: <div data-testid="other-page">other page</div> },
+    ],
+    { initialEntries: [path] },
+  );
+  const view = render(
     <QueryClientProvider client={qc}>
       <ReactFlowProvider>
-        <MemoryRouter initialEntries={[path]}>
-          <Routes>
-            <Route path="/workflows/:id" element={<WorkflowDetail />} />
-            <Route
-              path="/runs/:id"
-              element={<div data-testid="run-probe">run page</div>}
-            />
-          </Routes>
-        </MemoryRouter>
+        <RouterProvider router={router} />
       </ReactFlowProvider>
     </QueryClientProvider>,
   );
+  return { ...view, router };
 }
 
 // jsdom 未实现 ResizeObserver（React Flow 容器测量依赖）：无操作桩。
@@ -238,5 +243,119 @@ describe('WorkflowDetail：启动与保存门', () => {
       expect(vi.mocked(api.saveWorkflow)).toHaveBeenCalledWith('demo', 1, expect.stringContaining('name: demo')),
     );
     expect(useEditorStore.getState().dirty).toBe(false); // markSaved
+  });
+});
+
+describe('WorkflowDetail：save-ux 快捷键与 toast', () => {
+  it('Ctrl+S 触发保存（脏态 + 校验通过）；有校验问题时不触发', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.getWorkflow).mockResolvedValue({
+      id: 'abc',
+      name: 'demo',
+      version: 1,
+      yaml: VALID_YAML,
+      graph: parseWorkflowGraph(VALID_YAML),
+    });
+    vi.mocked(api.saveWorkflow).mockResolvedValue({ id: 'abc' });
+    renderAt('/workflows/abc');
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+    act(() => useEditorStore.getState().addNode('mock')); // 脏态
+    expect(useEditorStore.getState().dirty).toBe(true);
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(vi.mocked(api.saveWorkflow)).toHaveBeenCalledTimes(1));
+
+    // 校验有问题（meta.name 为空）→ Ctrl+S 不触发保存
+    await waitFor(() => expect(useEditorStore.getState().dirty).toBe(false)); // 上次保存已清脏
+    act(() => useEditorStore.getState().updateModelMeta({ name: '' }));
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await act(async () => {}); // 冲刷微任务，确认无第二次调用
+    expect(vi.mocked(api.saveWorkflow)).toHaveBeenCalledTimes(1);
+  });
+
+  it('保存成功弹 fs-toast（✓ 已保存 + 名称），2.2s 后自动消失', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.getWorkflow).mockResolvedValue({
+      id: 'abc',
+      name: 'demo',
+      version: 1,
+      yaml: VALID_YAML,
+      graph: parseWorkflowGraph(VALID_YAML),
+    });
+    // 手动决出的 promise：真定时器阶段发起保存，假时钟阶段 resolve，
+    // 使 2200ms 的 toast 计时器确定性可推进。
+    let resolveSave!: (v: { id: string }) => void;
+    vi.mocked(api.saveWorkflow).mockImplementation(
+      () => new Promise((res) => { resolveSave = res; }),
+    );
+    renderAt('/workflows/abc');
+    const save = (await screen.findByRole('button', { name: '保存' })) as HTMLButtonElement;
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+    act(() => useEditorStore.getState().addNode('mock')); // 脏态 → 保存按钮高亮
+
+    fireEvent.click(save);
+    expect(screen.queryByTestId('save-toast')).toBeNull(); // 成功前无 toast
+    // mutate 的 mutationFn 在微任务里执行：真定时器阶段等到 mock 被调用
+    //（resolveSave 已赋值），再切假时钟确定性推进 toast 计时器。
+    await waitFor(() => expect(vi.mocked(api.saveWorkflow)).toHaveBeenCalled());
+    vi.useFakeTimers();
+    try {
+      await act(async () => resolveSave({ id: 'abc' }));
+      const toast = screen.getByTestId('save-toast');
+      expect(toast.textContent).toContain('✓ 已保存');
+      expect(toast.textContent).toContain('demo');
+      act(() => vi.advanceTimersByTime(2300));
+      expect(screen.queryByTestId('save-toast')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('WorkflowDetail：save-ux 未保存离开拦截', () => {
+  it('脏态路由跳转弹确认模态：留下留在原页，离开放行', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.getWorkflow).mockResolvedValue({
+      id: 'abc',
+      name: 'demo',
+      version: 1,
+      yaml: VALID_YAML,
+      graph: parseWorkflowGraph(VALID_YAML),
+    });
+    const { router } = renderAt('/workflows/abc');
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+    act(() => useEditorStore.getState().addNode('mock')); // 脏态
+    expect(useEditorStore.getState().dirty).toBe(true);
+
+    // 脏态跳转 → 拦截：模态出现，目标页未渲染
+    //（async act 冲刷 RouterProvider 的 useSyncExternalStore 更新，导航确定落地）
+    await act(async () => router.navigate('/other'));
+    await screen.findByRole('dialog', { name: '有未保存的修改' });
+    expect(screen.queryByTestId('other-page')).toBeNull();
+
+    // 留下：模态关闭，URL/内容留在原页
+    fireEvent.click(screen.getByRole('button', { name: '留下' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByTestId('other-page')).toBeNull();
+
+    // 再次跳转 → 离开：放行到目标页
+    await act(async () => router.navigate('/other'));
+    await screen.findByRole('dialog', { name: '有未保存的修改' });
+    fireEvent.click(screen.getByRole('button', { name: '离开' }));
+    await screen.findByTestId('other-page');
+  });
+
+  it('保存成功后的 new → /workflows/:id 跳转不被拦截（markSaved 先于 navigate）', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.saveWorkflow).mockResolvedValue({ id: 'wf-new' });
+    renderAt('/workflows/new');
+    const save = (await screen.findByRole('button', { name: '保存' })) as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+
+    fireEvent.click(save);
+    await waitFor(() => expect(useEditorStore.getState().dirty).toBe(false)); // markSaved
+    // 导航确实发生（标题从「新建工作流」变为「工作流：…」= id 已切换），且全程无拦截模态
+    await waitFor(() => expect(screen.queryByText('新建工作流')).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });
