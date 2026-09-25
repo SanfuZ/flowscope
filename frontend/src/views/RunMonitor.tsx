@@ -166,6 +166,7 @@ export default function RunMonitor() {
               nodeTypes={nodeTypes}
               onNodeClick={(_, node) => setSelected(node.id)}
               fitView
+              maxZoom={1}
               proOptions={{ hideAttribution: true }}
               nodesDraggable={false}
               nodesConnectable={false}

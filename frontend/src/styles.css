@@ -715,15 +715,17 @@ body {
 }
 
 .fs-node {
-  width: 212px;
-  min-height: 64px;
-  border-radius: 10px;
+  width: auto;                       /* 内容自适应：约为固定宽（212px）的一半 */
+  min-width: 96px;
+  max-width: 132px;
+  min-height: 46px;
+  border-radius: 9px;
   border: 1px solid var(--border-strong);
   border-left-width: 3px;
   background: var(--surface-2);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-  padding: 9px 12px;
-  font-size: 12px;
+  padding: 6px 10px;
+  font-size: 11.5px;
   transition: border-color 0.15s, background 0.15s;
 }
 
@@ -745,8 +747,12 @@ body {
 
 .fs-node__id {
   font-weight: 700;
-  font-size: 13.5px;
+  font-size: 12.5px;
   letter-spacing: 0.2px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fs-node__status {

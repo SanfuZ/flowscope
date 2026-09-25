@@ -153,6 +153,7 @@ function EditCanvas() {
       deleteKeyCode={['Backspace', 'Delete']}
       minZoom={0.2}
       fitView
+      maxZoom={1}
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={20} />
