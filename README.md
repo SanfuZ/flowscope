@@ -46,6 +46,20 @@ env = { API_KEY_FILE = "secrets/api.key" }            # 环境变量（可选，
 > 权限说明（M1 策略）：agent 读取 `cwd` 范围内的文件自动放行，写文件与终端操作自动
 > 拒绝——每次自动决策都会出现在节点日志里，全程可审计。
 
+#### 接入 ZCode 本地实测（免配置）
+
+桌面安装的 ZCode CLI 无原生 ACP 模式，FlowScope 通过社区桥
+[`zcode-acp-server`](https://www.npmjs.com/package/zcode-acp-server)（ACP ↔ ZCode
+Protocol 翻译）接入：**桥与 node≥22 就位时，首次启动会自动在 agents.toml 生成
+`zcode` 条目**（含 `ZCODE_NODE`/`ZCODE_BIN`/`ZCODE_ACP_RUNTIME` 环境变量与默认模型
+`builtin:bigmodel-coding-plan\GLM-5.3-Flash`，避开无头必败的 start-plan；模型可在
+条目的 `model` 字段改）。重启后在 agent 面板即可拖出 ZCode 节点直接跑——节点会话
+视图里能看到真实的流式回答、思考过程与工具调用。
+
+路径与本机默认不同时，用环境变量覆盖后再启动：`ZCODE_NODE`（≥22 的 node）、
+`ZCODE_BIN`（zcode.cjs 入口）、`ZCODE_ACP_BRIDGE`（桥的 cli.js）、`ZCODE_ACP_CWD`
+（会话工作目录，默认用户主目录）。
+
 ### 第 3 步：创建你的第一个工作流
 
 进入「工作流」→「**新建工作流**」，全程在画布上点选/拖拽完成，不用写一行 YAML：
