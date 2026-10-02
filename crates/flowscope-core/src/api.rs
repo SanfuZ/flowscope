@@ -144,6 +144,7 @@ pub async fn bootstrap(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ZcodeSpec {
     node: PathBuf,
+    bin: PathBuf,
     bridge: PathBuf,
     cwd: PathBuf,
 }
@@ -153,6 +154,9 @@ const DEFAULT_ZCODE_NODE: &str = r"D:\zcode_processing\tools\node-v22.20.0-win-x
 /// 本机默认桥入口 `zcode-acp-server`（启动参数 `server`；env `ZCODE_ACP_BRIDGE` 覆盖）。
 const DEFAULT_ZCODE_BRIDGE: &str =
     r"D:\zcode_processing\zcode-acp-demo\node_modules\zcode-acp-server\dist\cli.js";
+/// 本机默认 zcode CLI 入口（桌面安装包自带；env `ZCODE_BIN` 覆盖）——
+/// 桥靠它在 PATH 之外定位后端（缺失时报 "zcode not found"）。
+const DEFAULT_ZCODE_BIN: &str = r"D:\software\ZCode\resources\glm\zcode.cjs";
 /// ZCode 默认目标模型（全局约束：必须避开 start-plan——无头模式必败）。
 /// TOML 输出用单引号字面串，值内单个反斜杠无需转义。
 const ZCODE_DEFAULT_MODEL: &str = r"builtin:bigmodel-coding-plan\GLM-5.3-Flash";
@@ -170,20 +174,28 @@ fn user_home_dir() -> PathBuf {
 /// cwd 取 env `ZCODE_ACP_CWD`，缺省用户主目录（cwd 只作会话根，不要求存在）。
 fn zcode_spec(
     node_env: Option<String>,
+    bin_env: Option<String>,
     bridge_env: Option<String>,
     cwd_env: Option<String>,
     home_fallback: &Path,
 ) -> Option<ZcodeSpec> {
     let node = node_env.map_or_else(|| PathBuf::from(DEFAULT_ZCODE_NODE), PathBuf::from);
+    let bin = bin_env.map_or_else(|| PathBuf::from(DEFAULT_ZCODE_BIN), PathBuf::from);
     let bridge = bridge_env.map_or_else(|| PathBuf::from(DEFAULT_ZCODE_BRIDGE), PathBuf::from);
     let cwd = cwd_env.map_or_else(|| home_fallback.to_path_buf(), PathBuf::from);
-    (node.is_file() && bridge.is_file()).then_some(ZcodeSpec { node, bridge, cwd })
+    (node.is_file() && bridge.is_file()).then_some(ZcodeSpec {
+        node,
+        bin,
+        bridge,
+        cwd,
+    })
 }
 
 /// [`zcode_spec`] 的生产入口：从进程环境读取覆盖项。
 fn zcode_spec_from_env() -> Option<ZcodeSpec> {
     zcode_spec(
         std::env::var("ZCODE_NODE").ok(),
+        std::env::var("ZCODE_BIN").ok(),
         std::env::var("ZCODE_ACP_BRIDGE").ok(),
         std::env::var("ZCODE_ACP_CWD").ok(),
         &user_home_dir(),
@@ -239,9 +251,10 @@ fn default_agents_toml_content(
              command = ['{node}', '{bridge}', 'server']\n\
              name = 'ZCode (ACP 桥)'\n\
              cwd = '{cwd}'\n\
-             env = {{ ZCODE_NODE = '{node}', ZCODE_ACP_RUNTIME = 'node' }}\n\
+             env = {{ ZCODE_NODE = '{node}', ZCODE_BIN = '{bin}', ZCODE_ACP_RUNTIME = 'node' }}\n\
              model = '{model}'\n",
             node = z.node.display(),
+            bin = z.bin.display(),
             bridge = z.bridge.display(),
             cwd = z.cwd.display(),
             model = ZCODE_DEFAULT_MODEL,
@@ -1139,12 +1152,14 @@ mod tests {
         // (a) env 全给 + cwd 给定 → Some，路径原样展开。
         let spec = zcode_spec(
             Some(node_s.clone()),
+            None,
             Some(bridge_s.clone()),
             Some("D:/wk".into()),
             Path::new("D:/home"),
         )
         .expect("桥文件存在时应生成 zcode 条目");
         assert_eq!(spec.node, node);
+        assert_eq!(spec.bin, PathBuf::from(DEFAULT_ZCODE_BIN));
         assert_eq!(spec.bridge, bridge);
         assert_eq!(spec.cwd, Path::new("D:/wk"));
 
@@ -1153,6 +1168,7 @@ mod tests {
         assert!(
             zcode_spec(
                 Some(node_s.clone()),
+                None,
                 Some(missing),
                 None,
                 Path::new("D:/home")
@@ -1163,6 +1179,7 @@ mod tests {
         assert!(
             zcode_spec(
                 Some(missing_node),
+                None,
                 Some(bridge_s.clone()),
                 None,
                 Path::new("D:/home")
@@ -1173,6 +1190,7 @@ mod tests {
         // (c) cwd 缺省 → 用户主目录回退值。
         let spec = zcode_spec(
             Some(node_s.clone()),
+            None,
             Some(bridge_s.clone()),
             None,
             Path::new("D:/home"),
