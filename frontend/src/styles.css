@@ -783,6 +783,16 @@ body {
   font-size: 11px;
 }
 
+/* 消息预览行（M2c Task 3）：running/succeeded 时的 message 尾部，单行省略 */
+.fs-node__preview {
+  margin-top: 5px;
+  color: var(--faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fs-node--pending {
   border-left-color: var(--border-strong);
   opacity: 0.85;

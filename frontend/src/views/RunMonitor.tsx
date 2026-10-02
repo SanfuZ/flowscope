@@ -15,6 +15,11 @@ import { useRunEvents } from '../api/useRunEvents';
 
 const TERMINAL = ['finished', 'failed', 'cancelled', 'interrupted'];
 
+/** 消息尾部 48 字符（截断时带前导 …）：节点卡片预览行（M2c Task 3）。 */
+function messageTail(message: string, max = 48): string {
+  return message.length > max ? `…${message.slice(-max)}` : message;
+}
+
 /** running 节点存在时每秒 tick（NodeCard 保持纯展示，elapsed 由这里算好传入）。 */
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -97,6 +102,13 @@ export default function RunMonitor() {
               : undefined,
           lastToolTitle: nv?.lastToolTitle,
           error: nv?.error,
+          // 预览行：running 跟随流式尾部，succeeded 定格 ✅ 尾部（demo 的 .preview 语义）
+          preview:
+            nv?.status === 'running' && nv.message
+              ? messageTail(nv.message)
+              : nv?.status === 'succeeded' && nv.message
+                ? `✅ ${messageTail(nv.message)}`
+                : undefined,
         },
       };
     });

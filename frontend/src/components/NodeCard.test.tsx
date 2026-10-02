@@ -42,3 +42,24 @@ describe('NodeCard：状态着色与内容', () => {
     expect(within(c2).queryByText(/s$/)).toBeNull();
   });
 });
+
+describe('NodeCard：消息预览行（M2c Task 3）', () => {
+  it('preview 存在时渲染 .fs-node__preview 行（位于 body 内）', () => {
+    const { container } = renderCard({
+      id: 'a',
+      agent: 'mock',
+      status: 'running',
+      preview: '…消息尾部预览',
+    });
+    const body = container.querySelector('.fs-node__body');
+    expect(body).not.toBeNull();
+    const row = body!.querySelector('.fs-node__preview');
+    expect(row).not.toBeNull();
+    expect(row!.textContent).toBe('…消息尾部预览');
+  });
+
+  it('preview 缺省时不渲染预览行', () => {
+    const { container } = renderCard({ id: 'a', agent: 'mock', status: 'succeeded' });
+    expect(container.querySelector('.fs-node__preview')).toBeNull();
+  });
+});

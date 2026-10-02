@@ -23,6 +23,8 @@ export interface NodeCardData {
   elapsedMs?: number;
   lastToolTitle?: string;
   error?: string;
+  /** 消息预览行（M2c Task 3）：running/succeeded 时的 message 尾部（RunMonitor 算好传入）。 */
+  preview?: string;
 }
 
 export function formatElapsed(ms: number): string {
@@ -69,6 +71,11 @@ export default function NodeCard({
         {status === 'running' && data.lastToolTitle && (
           <div className="fs-node__tool" title="最近工具">
             ⚙ {data.lastToolTitle}
+          </div>
+        )}
+        {data.preview && (
+          <div className="fs-node__preview" title={data.preview}>
+            {data.preview}
           </div>
         )}
         {status === 'failed' && data.error && (
