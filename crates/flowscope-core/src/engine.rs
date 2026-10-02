@@ -569,18 +569,38 @@ impl Driver {
         self.states.insert(node_id.clone(), NodeState::Running);
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire_owned().await;
-            sink.emit(Some(&node_id), None, EventKind::NodeStarted, json!({}));
             let started = Instant::now();
-            let outcome = run_with_retries(
-                executor.as_ref(),
-                &sink,
-                &node,
-                &run_id,
-                &node_id,
-                &params,
-                &outputs,
-            )
-            .await;
+            // M2c：渲染前置——node.started 携带渲染后 prompt（会话视图用户气泡
+            // 数据源）。渲染失败路径无 prompt 字段，直接 node.failed。
+            let prompt = match render_prompt(&node.prompt, &params, &outputs) {
+                Ok(prompt) => prompt,
+                Err(e) => {
+                    let reason = format!("render: {e}");
+                    sink.emit(Some(&node_id), None, EventKind::NodeStarted, json!({}));
+                    sink.emit(
+                        Some(&node_id),
+                        None,
+                        EventKind::NodeFailed,
+                        json!({
+                            "durationMs": started.elapsed().as_millis() as u64,
+                            "reason": reason,
+                        }),
+                    );
+                    let _ = result_tx.send(NodeDone {
+                        node_id,
+                        outcome: Err(reason),
+                    });
+                    return;
+                }
+            };
+            sink.emit(
+                Some(&node_id),
+                None,
+                EventKind::NodeStarted,
+                json!({"prompt": prompt}),
+            );
+            let outcome =
+                run_with_retries(executor.as_ref(), &sink, &node, &run_id, &node_id, &prompt).await;
             let duration_ms = started.elapsed().as_millis() as u64;
             match &outcome {
                 Ok(_) => sink.emit(
@@ -642,24 +662,22 @@ impl Driver {
     }
 }
 
-/// 单节点的执行循环：渲染 → (执行 → 提取)×，Retryable 按 retry 策略退避重试，
-/// Fatal / 渲染失败 / 提取失败立即终态失败（确定性错误重试无意义）。
+/// 单节点的执行循环：(执行 → 提取)×，Retryable 按 retry 策略退避重试，
+/// Fatal / 提取失败立即终态失败（确定性错误重试无意义）。
+/// prompt 已在 spawn_node 渲染成功后才 emit node.started，此处直接复用。
 async fn run_with_retries(
     executor: &dyn NodeExecutor,
     sink: &EventSink,
     node: &AgentNodeDef,
     run_id: &str,
     id: &str,
-    params: &Value,
-    outputs: &HashMap<String, Value>,
+    prompt: &str,
 ) -> Result<Value, String> {
-    let prompt =
-        render_prompt(&node.prompt, params, outputs).map_err(|e| format!("render: {e}"))?;
     let req = ExecRequest {
         run_id: run_id.to_owned(),
         node_id: id.to_owned(),
         agent_key: node.agent.clone(),
-        prompt,
+        prompt: prompt.to_owned(),
         timeout: node.timeout_ms.map(Duration::from_millis),
     };
     let mut failures: u32 = 0;
@@ -854,6 +872,64 @@ edges:
         assert!(evs.iter().any(|e| e.kind == EventKind::NodeFinished
             && e.node_id.as_deref() == Some("ok2")
             && e.payload["durationMs"].is_u64()));
+
+        // M2c：node.started 携带渲染后 prompt，且仍是该节点的首个事件。
+        for (id, prompt) in [("ok1", "p1"), ("ok2", "p2")] {
+            let started = evs
+                .iter()
+                .find(|e| e.kind == EventKind::NodeStarted && e.node_id.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("{id} 缺 node.started"));
+            assert_eq!(
+                started.payload["prompt"], prompt,
+                "{id} node.started: {started:?}"
+            );
+        }
+    }
+
+    /// M2c：渲染失败路径——node.started 无 prompt 字段，随后 node.failed(reason=render…)；
+    /// 节点不得被真正执行。
+    #[tokio::test]
+    async fn render_failure_emits_started_without_prompt_then_failed() {
+        let wf = crate::workflow::parse_yaml(
+            r#"
+meta: {name: t-render, version: 1}
+nodes:
+  - {id: bad_tpl, agent: m, prompt: "{{ nodes.missing.output.x }}"}
+"#,
+        )
+        .unwrap();
+        let mock = Arc::new(MockExecutor::default());
+        let (store, _hub, engine) = engine_with(Arc::clone(&mock) as Arc<dyn NodeExecutor>);
+
+        let run_id = engine.start_run(wf, json!({})).await.unwrap();
+        let row = wait_terminal(&store, &run_id).await;
+        assert_eq!(row.status, "failed");
+        assert_eq!(
+            MockExecutor::count_of(&mock, "bad_tpl"),
+            0,
+            "渲染失败不得执行节点"
+        );
+
+        let evs = drained_events(&store, &run_id).await;
+        let started = evs
+            .iter()
+            .find(|e| e.kind == EventKind::NodeStarted && e.node_id.as_deref() == Some("bad_tpl"))
+            .expect("渲染失败也应有 node.started");
+        assert!(
+            started.payload.get("prompt").is_none(),
+            "渲染失败路径无 prompt 字段: {started:?}"
+        );
+        let failed = evs
+            .iter()
+            .find(|e| e.kind == EventKind::NodeFailed && e.node_id.as_deref() == Some("bad_tpl"))
+            .expect("node.failed");
+        assert!(
+            failed.payload["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("render")),
+            "reason: {failed:?}"
+        );
+        assert!(failed.payload["durationMs"].is_u64());
     }
 
     #[tokio::test]

@@ -140,8 +140,59 @@ pub async fn bootstrap(
     Ok((state, router))
 }
 
-/// 写默认 agents.toml（key `mock` → demo-script、key `bad-mock` → crash-script）
-/// 及两份脚本到 home/scripts/。路径用 TOML 单引号字面串以容忍 Windows 反斜杠。
+/// ZCode ACP 桥（zcode-acp-server）的本机接入参数（M2c）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZcodeSpec {
+    node: PathBuf,
+    bridge: PathBuf,
+    cwd: PathBuf,
+}
+
+/// 本机默认 node 可执行文件（可用 env `ZCODE_NODE` 覆盖）。
+const DEFAULT_ZCODE_NODE: &str = r"D:\zcode_processing\tools\node-v22.20.0-win-x64\node.exe";
+/// 本机默认桥入口 `zcode-acp-server`（启动参数 `server`；env `ZCODE_ACP_BRIDGE` 覆盖）。
+const DEFAULT_ZCODE_BRIDGE: &str =
+    r"D:\zcode_processing\zcode-acp-demo\node_modules\zcode-acp-server\dist\cli.js";
+/// ZCode 默认目标模型（全局约束：必须避开 start-plan——无头模式必败）。
+/// TOML 输出用单引号字面串，值内单个反斜杠无需转义。
+const ZCODE_DEFAULT_MODEL: &str = r"builtin:bigmodel-coding-plan\GLM-5.3-Flash";
+
+/// 用户主目录（ZCODE_ACP_CWD 缺省时的会话 cwd）。
+fn user_home_dir() -> PathBuf {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// ZCode 条目路径解析（全局约束）：env `ZCODE_NODE`/`ZCODE_ACP_BRIDGE` →
+/// 本机默认；node 与桥文件**都存在**才注册（返回 `None` = 不写该条目）。
+/// cwd 取 env `ZCODE_ACP_CWD`，缺省用户主目录（cwd 只作会话根，不要求存在）。
+fn zcode_spec(
+    node_env: Option<String>,
+    bridge_env: Option<String>,
+    cwd_env: Option<String>,
+    home_fallback: &Path,
+) -> Option<ZcodeSpec> {
+    let node = node_env.map_or_else(|| PathBuf::from(DEFAULT_ZCODE_NODE), PathBuf::from);
+    let bridge = bridge_env.map_or_else(|| PathBuf::from(DEFAULT_ZCODE_BRIDGE), PathBuf::from);
+    let cwd = cwd_env.map_or_else(|| home_fallback.to_path_buf(), PathBuf::from);
+    (node.is_file() && bridge.is_file()).then_some(ZcodeSpec { node, bridge, cwd })
+}
+
+/// [`zcode_spec`] 的生产入口：从进程环境读取覆盖项。
+fn zcode_spec_from_env() -> Option<ZcodeSpec> {
+    zcode_spec(
+        std::env::var("ZCODE_NODE").ok(),
+        std::env::var("ZCODE_ACP_BRIDGE").ok(),
+        std::env::var("ZCODE_ACP_CWD").ok(),
+        &user_home_dir(),
+    )
+}
+
+/// 写默认 agents.toml（key `mock` → demo-script、key `bad-mock` → crash-script、
+/// 桥文件存在时 key `zcode` → ZCode ACP 桥）及两份脚本到 home/scripts/。
+/// 路径用 TOML 单引号字面串以容忍 Windows 反斜杠。
 fn write_default_agents_toml(home: &Path, mock_bin: &Path) -> Result<(), ApiError> {
     let scripts_dir = home.join("scripts");
     std::fs::create_dir_all(&scripts_dir)
@@ -152,7 +203,22 @@ fn write_default_agents_toml(home: &Path, mock_bin: &Path) -> Result<(), ApiErro
         .map_err(|e| ApiError::Msg(format!("写 demo 脚本失败: {e}")))?;
     std::fs::write(&crash, CRASH_SCRIPT_YAML)
         .map_err(|e| ApiError::Msg(format!("写 crash 脚本失败: {e}")))?;
-    let content = format!(
+    let content =
+        default_agents_toml_content(mock_bin, &demo, &crash, zcode_spec_from_env().as_ref());
+    std::fs::write(home.join("agents.toml"), content)
+        .map_err(|e| ApiError::Msg(format!("写 agents.toml 失败: {e}")))?;
+    Ok(())
+}
+
+/// 默认 agents.toml 正文（[`write_default_agents_toml`] 与测试共用；zcode 条目
+/// 仅在 `zcode` 为 `Some` 时追加）。
+fn default_agents_toml_content(
+    mock_bin: &Path,
+    demo: &Path,
+    crash: &Path,
+    zcode: Option<&ZcodeSpec>,
+) -> String {
+    let mut content = format!(
         "# FlowScope 默认 agent 配置（bootstrap 生成；可手工编辑，重启生效）\n\
          [agents.mock]\n\
          command = ['{bin}', '--script', '{demo}']\n\
@@ -167,9 +233,21 @@ fn write_default_agents_toml(home: &Path, mock_bin: &Path) -> Result<(), ApiErro
         demo = demo.display(),
         crash = crash.display(),
     );
-    std::fs::write(home.join("agents.toml"), content)
-        .map_err(|e| ApiError::Msg(format!("写 agents.toml 失败: {e}")))?;
-    Ok(())
+    if let Some(z) = zcode {
+        content.push_str(&format!(
+            "\n[agents.zcode]\n\
+             command = ['{node}', '{bridge}', 'server']\n\
+             name = 'ZCode (ACP 桥)'\n\
+             cwd = '{cwd}'\n\
+             env = {{ ZCODE_NODE = '{node}', ZCODE_ACP_RUNTIME = 'node' }}\n\
+             model = '{model}'\n",
+            node = z.node.display(),
+            bridge = z.bridge.display(),
+            cwd = z.cwd.display(),
+            model = ZCODE_DEFAULT_MODEL,
+        ));
+    }
+    content
 }
 
 const DEMO_SCRIPT_YAML: &str = r#"# flowscope-mock-agent 演示脚本（bootstrap 生成）
@@ -992,6 +1070,9 @@ mod tests {
     async fn bootstrap_seeds_home_and_default_agents() {
         let home =
             std::env::temp_dir().join(format!("flowscope-bs-{}", uuid::Uuid::new_v4().simple()));
+        // zcode 条目按本机桥文件存在性条件追加（env 无覆盖时即本机默认路径）。
+        // 本测试只读 env 不写 env，与其余测试并行无竞态。
+        let zcode_registered = usize::from(zcode_spec_from_env().is_some());
 
         // 1) 无 mock bin：空 registry，路由可用
         let (state, app) = bootstrap(&home, None, None).await.unwrap();
@@ -1015,18 +1096,135 @@ mod tests {
         let (status, body) = req_json(&app, get_req("/api/agents".into())).await;
         assert_eq!(status, StatusCode::OK);
         let arr = body.as_array().unwrap();
-        assert_eq!(arr.len(), 2, "mock + bad-mock: {body}");
+        assert_eq!(
+            arr.len(),
+            2 + zcode_registered,
+            "mock + bad-mock(+zcode): {body}"
+        );
         assert!(arr.iter().any(|a| a["key"] == "mock"));
         assert!(arr.iter().any(|a| a["key"] == "bad-mock"));
+        assert_eq!(
+            arr.iter().any(|a| a["key"] == "zcode"),
+            zcode_registered == 1
+        );
         assert!(arr.iter().all(|a| a["healthy"] == true));
 
         // 3) 再次 bootstrap：加载已存在的 agents.toml，不重复生成
         let (state, app) = bootstrap(&home, None, None).await.unwrap();
         let (_, body) = req_json(&app, get_req("/api/agents".into())).await;
-        assert_eq!(body.as_array().unwrap().len(), 2, "复用既有 agents.toml");
-        assert_eq!(state.registry.agents.len(), 2);
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            2 + zcode_registered,
+            "复用既有 agents.toml"
+        );
+        assert_eq!(state.registry.agents.len(), 2 + zcode_registered);
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// M2c：ZCode 条目——env 指向临时假桥文件时生成、缺文件时不注册；
+    /// 完整默认 toml 可被 registry 解析，command/cwd/env/model 正确展开。
+    #[test]
+    fn zcode_entry_when_bridge_files_exist() {
+        let dir =
+            std::env::temp_dir().join(format!("flowscope-zcode-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node.exe");
+        let bridge = dir.join("cli.js");
+        std::fs::write(&node, "").unwrap();
+        std::fs::write(&bridge, "").unwrap();
+        let node_s = node.to_string_lossy().into_owned();
+        let bridge_s = bridge.to_string_lossy().into_owned();
+
+        // (a) env 全给 + cwd 给定 → Some，路径原样展开。
+        let spec = zcode_spec(
+            Some(node_s.clone()),
+            Some(bridge_s.clone()),
+            Some("D:/wk".into()),
+            Path::new("D:/home"),
+        )
+        .expect("桥文件存在时应生成 zcode 条目");
+        assert_eq!(spec.node, node);
+        assert_eq!(spec.bridge, bridge);
+        assert_eq!(spec.cwd, Path::new("D:/wk"));
+
+        // (b) 文件缺失（桥或 node 任一，经 env 传入不存在路径）→ None（不注册）。
+        let missing = dir.join("missing.js").to_string_lossy().into_owned();
+        assert!(
+            zcode_spec(
+                Some(node_s.clone()),
+                Some(missing),
+                None,
+                Path::new("D:/home")
+            )
+            .is_none()
+        );
+        let missing_node = dir.join("no-node.exe").to_string_lossy().into_owned();
+        assert!(
+            zcode_spec(
+                Some(missing_node),
+                Some(bridge_s.clone()),
+                None,
+                Path::new("D:/home")
+            )
+            .is_none()
+        );
+
+        // (c) cwd 缺省 → 用户主目录回退值。
+        let spec = zcode_spec(
+            Some(node_s.clone()),
+            Some(bridge_s.clone()),
+            None,
+            Path::new("D:/home"),
+        )
+        .unwrap();
+        assert_eq!(spec.cwd, Path::new("D:/home"));
+
+        // (d) 完整默认 toml（含 zcode）可解析，字段展开正确（含单反斜杠 model）。
+        let content = default_agents_toml_content(
+            Path::new("C:/bin/mock.exe"),
+            Path::new("D:/home/scripts/demo-script.yaml"),
+            Path::new("D:/home/scripts/crash-script.yaml"),
+            Some(&spec),
+        );
+        let toml_path =
+            std::env::temp_dir().join(format!("flowscope-agents-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&toml_path, &content).unwrap();
+        let reg = AgentRegistry::load_toml(&toml_path).unwrap();
+        assert_eq!(reg.agents.len(), 3, "toml: {content}");
+        let z = reg.get("zcode").unwrap();
+        assert_eq!(
+            z.command,
+            vec![node_s.clone(), bridge_s.clone(), "server".to_owned()]
+        );
+        assert_eq!(z.cwd.as_deref(), Some(Path::new("D:/home")));
+        assert_eq!(
+            z.env.get("ZCODE_NODE").map(String::as_str),
+            Some(node_s.as_str())
+        );
+        assert_eq!(
+            z.env.get("ZCODE_ACP_RUNTIME").map(String::as_str),
+            Some("node")
+        );
+        assert_eq!(
+            z.model.as_deref(),
+            Some(r"builtin:bigmodel-coding-plan\GLM-5.3-Flash")
+        );
+
+        // (e) zcode 为 None 时正文只有 mock 两个条目。
+        let content = default_agents_toml_content(
+            Path::new("C:/bin/mock.exe"),
+            Path::new("D:/home/scripts/demo-script.yaml"),
+            Path::new("D:/home/scripts/crash-script.yaml"),
+            None,
+        );
+        assert!(!content.contains("zcode"), "toml: {content}");
+        std::fs::write(&toml_path, &content).unwrap();
+        let reg = AgentRegistry::load_toml(&toml_path).unwrap();
+        assert_eq!(reg.agents.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_file(&toml_path).ok();
     }
 
     /// 静态托管：dist 存在时 `/` 走 ServeDir、未命中回退 index.html（SPA）、

@@ -12,8 +12,9 @@
 //! 5. hub 快照与 store 落库事件数一致；
 //! 6. crash 注入 → node.failed + run.failed，reason 携带 agent stderr 尾部行。
 //!
-//! 注：Engine 不在任何事件里回显渲染后的 prompt（模板注入只能由“严格未定义
-//! 即失败”语义间接保证——三节点全部 finished 说明 params 与上游输出注入成功）。
+//! 注：Engine 在 node.started 事件 payload 里回显渲染后的 prompt（M2c，
+//! payload.prompt）——模板注入由「严格未定义即失败」语义间接保证——三节点全部
+//! finished 说明 params 与上游输出注入成功。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -75,6 +76,7 @@ fn mock_agent(key: &str, script: &str) -> AgentConfig {
         env: BTreeMap::new(),
         default_mode: None,
         permission_default: PermissionDefault::Deny,
+        model: None,
     }
 }
 

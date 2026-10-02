@@ -25,17 +25,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use agent_client_protocol as acp;
+use agent_client_protocol::role::HasPeer;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     ClientCapabilities, ContentBlock, CreateTerminalRequest, FileSystemCapabilities,
     Implementation, InitializeRequest, KillTerminalRequest, PermissionOption, PermissionOptionId,
     PermissionOptionKind, Plan, ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason,
-    TerminalOutputRequest, WaitForTerminalExitRequest, WriteTextFileRequest,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionValue,
+    SessionConfigSelectOptions, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    StopReason, TerminalOutputRequest, WaitForTerminalExitRequest, WriteTextFileRequest,
 };
 use agent_client_protocol::util::MatchDispatch;
-use agent_client_protocol::{Client, LineDirection, SessionMessage};
+use agent_client_protocol::{Agent, Client, LineDirection, SessionMessage};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -311,6 +313,8 @@ pub async fn run_agent_node(
             .build_session(&session_cwd)
             .block_task()
             .run_until(async |mut session| {
+                // M2c：model 配置在首个 prompt 之前下发（发送失败仅告警，不阻断）。
+                apply_model_config(&session, cfg).await;
                 if let Err(e) = session.send_prompt(req.prompt.clone()) {
                     return Ok(Err(state.process_exit(&e)));
                 }
@@ -611,6 +615,71 @@ fn initialize_request() -> InitializeRequest {
         .client_info(Implementation::new("flowscope", "0.1.0"))
 }
 
+/// `session/new` 后的 model 配置逻辑（M2c，全局约束：start-plan 无头必败）。
+///
+/// `cfg.model` 显式指定时直接下发该值；否则从 agent 在 session/new 响应里汇报的
+/// configOptions 中找 `id == "model"` 的 select 项，取第一个不含 "start-plan"
+/// 的候选值下发。发送失败（agent 不支持该方法/拒绝）只记 warn，绝不阻断节点。
+async fn apply_model_config<Link>(session: &acp::ActiveSession<'_, Link>, cfg: &AgentConfig)
+where
+    Link: HasPeer<Agent>,
+{
+    let Some(value) = select_model_value(
+        cfg.model.as_deref(),
+        session.config_options().unwrap_or(&[]),
+    ) else {
+        return;
+    };
+    let request = SetSessionConfigOptionRequest::new(
+        session.session_id().clone(),
+        "model",
+        SessionConfigOptionValue::value_id(value.clone()),
+    );
+    match session
+        .connection()
+        .send_request_to(Agent, request)
+        .block_task()
+        .await
+    {
+        Ok(_) => tracing::info!(agent = %cfg.key, model = %value, "已设置会话 model"),
+        Err(e) => tracing::warn!(
+            agent = %cfg.key,
+            model = %value,
+            error = %e,
+            "session/set_config_option(model) 发送失败，继续执行"
+        ),
+    }
+}
+
+/// 纯函数：决定要下发的 model 值。`configured` 优先；否则在 configOptions 里
+/// 找 `id == "model"` 的 select 项，取第一个不含 "start-plan" 的候选值。
+/// 无候选（无该选项 / 全为 start-plan / 非 select 形态）→ `None`（不下发）。
+fn select_model_value(configured: Option<&str>, options: &[SessionConfigOption]) -> Option<String> {
+    if let Some(model) = configured {
+        return Some(model.to_owned());
+    }
+    let model = options.iter().find(|option| &*option.id.0 == "model")?;
+    let select = match &model.kind {
+        SessionConfigKind::Select(select) => select,
+        _ => return None,
+    };
+    let candidates: Vec<&str> = match &select.options {
+        SessionConfigSelectOptions::Ungrouped(options) => {
+            options.iter().map(|o| &*o.value.0).collect()
+        }
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .map(|o| &*o.value.0)
+            .collect(),
+        _ => Vec::new(),
+    };
+    candidates
+        .into_iter()
+        .find(|value| !value.contains("start-plan"))
+        .map(str::to_owned)
+}
+
 fn map_stop_reason(reason: StopReason, last_message: String) -> Result<String, NodeFailure> {
     match reason {
         StopReason::EndTurn => Ok(last_message),
@@ -844,6 +913,7 @@ mod tests {
             env: Default::default(),
             default_mode: None,
             permission_default: super::super::registry::PermissionDefault::Deny,
+            model: None,
         }
     }
 
@@ -981,6 +1051,112 @@ mod tests {
         assert!(
             start.elapsed() < Duration::from_secs(10),
             "timeout must not wait on the child"
+        );
+    }
+
+    /// M2c：model 选择纯函数——显式配置优先（短路），否则跳过 start-plan 取首个候选。
+    #[test]
+    fn select_model_value_prefers_configured_and_skips_start_plan() {
+        use agent_client_protocol::schema::v1::SessionConfigSelectOption;
+
+        let model_option = |values: &[&str]| {
+            let current = values.first().copied().unwrap_or("");
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                current.to_string(),
+                values
+                    .iter()
+                    .map(|v| SessionConfigSelectOption::new(v.to_string(), *v))
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        // (a) 显式配置 → 短路，即使候选列表里也有值。
+        assert_eq!(
+            select_model_value(Some("m1"), &[model_option(&["m2"])]),
+            Some("m1".into())
+        );
+
+        // (b) 无配置、空 configOptions → None（不发、不炸——mock 路径）。
+        assert_eq!(select_model_value(None, &[]), None);
+
+        // (c) start-plan 在前 → 取其后第一个非 start-plan 候选。
+        assert_eq!(
+            select_model_value(
+                None,
+                &[model_option(&["builtin:start-plan", "builtin:glm-flash"])]
+            ),
+            Some("builtin:glm-flash".into())
+        );
+        assert_eq!(
+            select_model_value(
+                None,
+                &[model_option(&[
+                    "builtin:start-plan",
+                    "builtin:also-start-plan-ish",
+                    "builtin:glm-flash"
+                ])]
+            ),
+            // 子串匹配：第二个候选含 "start-plan" 同样被跳过。
+            Some("builtin:glm-flash".into())
+        );
+
+        // (d) 候选全为 start-plan → None。
+        assert_eq!(
+            select_model_value(None, &[model_option(&["builtin:start-plan"])]),
+            None
+        );
+
+        // (e) 没有 id=="model" 的选项 → None。
+        let other = SessionConfigOption::select(
+            "theme",
+            "Theme",
+            "dark",
+            vec![SessionConfigSelectOption::new("dark", "Dark")],
+        );
+        assert_eq!(select_model_value(None, &[other]), None);
+
+        // (f) 分组（grouped）候选同样参与挑选。
+        let grouped = SessionConfigOption::select(
+            "model",
+            "Model",
+            "builtin:start-plan",
+            vec![
+                agent_client_protocol::schema::v1::SessionConfigSelectGroup::new(
+                    "g",
+                    "Group",
+                    vec![
+                        SessionConfigSelectOption::new("builtin:start-plan", "Start Plan"),
+                        SessionConfigSelectOption::new("builtin:glm", "GLM"),
+                    ],
+                ),
+            ],
+        );
+        assert_eq!(
+            select_model_value(None, &[grouped]),
+            Some("builtin:glm".into())
+        );
+    }
+
+    /// M2c 端到端（发送失败容忍）：mock 对 `session/set_config_option` 回
+    /// -32601 Method not found——发送失败仅 warn，节点照常完成整个回合。
+    #[tokio::test]
+    async fn model_send_failure_does_not_abort_node() {
+        let (events, sink) = collect();
+        let mut cfg = mock_cfg(&mock_script("demo-script.yaml"));
+        cfg.model = Some(r"builtin:bigmodel-coding-plan\GLM-5.3-Flash".into());
+        let msg = run_agent_node(&cfg, &req("hi", 10_000), &sink)
+            .await
+            .unwrap();
+        assert_eq!(msg, r#"{"ok": true, "data_path": "out/report.md"}"#);
+        assert!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.kind == EventKind::MsgDelta),
+            "prompt 仍被发送并得到回合事件"
         );
     }
 

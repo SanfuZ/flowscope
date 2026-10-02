@@ -50,6 +50,9 @@ pub struct AgentConfig {
     pub env: BTreeMap<String, String>,
     pub default_mode: Option<String>,
     pub permission_default: PermissionDefault,
+    /// `session/set_config_option {configId: "model"}` 在 `session/new` 后下发；
+    /// `None` 时从 agent 汇报的 configOptions 里自动选第一个非 start-plan 项。
+    pub model: Option<String>,
 }
 
 /// All agents known to this FlowScope instance, keyed by agent key.
@@ -73,6 +76,8 @@ struct AgentEntry {
     default_mode: Option<String>,
     permission_default: Option<String>,
     name: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 impl AgentRegistry {
@@ -108,6 +113,7 @@ impl AgentRegistry {
                 env: entry.env,
                 default_mode: entry.default_mode,
                 permission_default,
+                model: entry.model,
             };
             agents.insert(key, cfg);
         }
@@ -168,6 +174,25 @@ name = "企业 Agent"
         assert_eq!(cfg.permission_default, PermissionDefault::Deny);
         assert!(cfg.cwd.is_none());
         assert!(cfg.env.is_empty());
+        assert!(cfg.model.is_none(), "model 缺省为 None");
+    }
+
+    /// `model` 字段（M2c）：含反斜杠的模型 id 用 TOML 字面串（单引号）无需转义。
+    #[test]
+    fn parses_model_field_with_backslash() {
+        let path = write_temp_toml(
+            r#"
+[agents.zcode]
+command = ["node", "cli.js", "server"]
+model = 'builtin:bigmodel-coding-plan\GLM-5.3-Flash'
+"#,
+        );
+        let reg = AgentRegistry::load_toml(&path).unwrap();
+        let cfg = reg.get("zcode").unwrap();
+        assert_eq!(
+            cfg.model.as_deref(),
+            Some(r"builtin:bigmodel-coding-plan\GLM-5.3-Flash")
+        );
     }
 
     #[test]
