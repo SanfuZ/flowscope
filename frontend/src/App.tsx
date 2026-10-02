@@ -3,10 +3,18 @@
 // 原因：WorkflowDetail 的 useBlocker（未保存离开拦截）在 react-router 6.19+
 // 仅于 data router 上下文可用（useDataRouterContext 会抛错），路由结构不变。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createBrowserRouter, Navigate, NavLink, Outlet, RouterProvider } from 'react-router-dom';
+import {
+  createBrowserRouter,
+  Navigate,
+  NavLink,
+  Outlet,
+  useParams,
+  RouterProvider,
+} from 'react-router-dom';
 import { ReactNode } from 'react';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
+import NodeSession from './views/NodeSession';
 import RunList from './views/RunList';
 import RunMonitor from './views/RunMonitor';
 import WorkflowDetail from './views/WorkflowDetail';
@@ -82,6 +90,12 @@ function AppShell() {
   );
 }
 
+/** 节点会话路由薄壳：NodeSession 本体以 props 接参（便于直渲染单测）。 */
+function NodeSessionRoute() {
+  const { runId, nodeId } = useParams<{ runId: string; nodeId: string }>();
+  return <NodeSession runId={runId ?? ''} nodeId={nodeId ?? ''} />;
+}
+
 const router = createBrowserRouter([
   {
     path: '/',
@@ -91,6 +105,7 @@ const router = createBrowserRouter([
       { path: 'workflows', element: <WorkflowList /> },
       { path: 'workflows/:id', element: <WorkflowDetail /> },
       { path: 'runs/:id', element: <RunMonitor /> },
+      { path: 'runs/:runId/sess/:nodeId', element: <NodeSessionRoute /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

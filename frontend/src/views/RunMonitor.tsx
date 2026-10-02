@@ -4,7 +4,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Background, Controls, ReactFlow, type Edge } from '@xyflow/react';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import NodeDrawer from '../components/NodeDrawer';
 import StatusBadge from '../components/StatusBadge';
@@ -29,6 +29,7 @@ function useNow(active: boolean): number {
 export default function RunMonitor() {
   const { id } = useParams<{ id: string }>();
   const runId = id ?? '';
+  const navigate = useNavigate();
 
   const runQuery = useQuery({ queryKey: ['run', runId], queryFn: () => api.getRun(runId) });
   const run = runQuery.data;
@@ -165,6 +166,7 @@ export default function RunMonitor() {
               edges={rfEdges}
               nodeTypes={nodeTypes}
               onNodeClick={(_, node) => setSelected(node.id)}
+              onNodeDoubleClick={(_, node) => navigate(`/runs/${runId}/sess/${node.id}`)}
               fitView
               maxZoom={1}
               proOptions={{ hideAttribution: true }}

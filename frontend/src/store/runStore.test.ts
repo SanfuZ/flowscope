@@ -21,6 +21,16 @@ describe('applyEvent：节点生命周期', () => {
     expect(v.lastSeq).toBe(4);
   });
 
+  it('node.started payload.prompt → NodeView.prompt（渲染失败路径无字段则不设置）', () => {
+    let v = emptyView('r', ['a', 'b']);
+    v = applyEvent(v, ev(1, 'node.started', 'a', { prompt: '渲染后的输入' }));
+    expect(v.nodes.a.prompt).toBe('渲染后的输入');
+    expect(v.nodes.a.status).toBe('running');
+    // 渲染失败路径：node.started 无 prompt 字段（M2c Task 1 契约）
+    v = applyEvent(v, ev(2, 'node.started', 'b', {}));
+    expect(v.nodes.b.prompt).toBeUndefined();
+  });
+
   it('node.retry 保持 running（pending 则转 running）', () => {
     let v = emptyView('r', ['a', 'b']);
     v = applyEvent(v, ev(1, 'node.started', 'a', {}));

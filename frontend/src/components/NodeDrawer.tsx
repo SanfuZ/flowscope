@@ -2,6 +2,7 @@
 // 数据从 zustand store 按 nodeId 选择；output artifact 成功后经 react-query 拉取。
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { useRunStore } from '../store/runStore';
 import LogList from './LogList';
@@ -40,6 +41,7 @@ export default function NodeDrawer({
   onClose: () => void;
 }) {
   const node = useRunStore((s) => s.view?.nodes[nodeId]);
+  const navigate = useNavigate();
   const [tab, setTab] = useState<TabKey>('msg');
 
   if (!node) {
@@ -60,9 +62,19 @@ export default function NodeDrawer({
     <aside className="fs-drawer" data-testid="drawer">
       <div className="fs-drawer__head">
         <span className="fs-drawer__title">{nodeId}</span>
-        <button className="fs-btn fs-btn--ghost" onClick={onClose}>
-          关闭
-        </button>
+        <div className="fs-drawer__headbtns">
+          {/* M2c 入口：跳全页节点会话视图（回放+实时统一） */}
+          <button
+            className="fs-btn"
+            data-testid="drawer-open-session"
+            onClick={() => navigate(`/runs/${runId}/sess/${nodeId}`)}
+          >
+            会话视图
+          </button>
+          <button className="fs-btn fs-btn--ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
       </div>
       <div className="fs-tabs" role="tablist">
         {TABS.map((t) => (

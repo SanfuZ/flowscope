@@ -4,7 +4,9 @@
 // 重连时以 store 内最新 lastSeq 为 after，配合服务端回放不丢不重
 // （applyEvent 还有 seq<=lastSeq 丢弃兜底）。connected 在断线间隙为 false。
 // 刻意保持薄：状态转移全在 runStore.applyEvent，本 hook 不参与（T14/E2E 覆盖）。
-import { useEffect, useState } from 'react';
+// onEvent（M2c 可选旁路）：与 store.apply 并行逐帧回调（节点会话视图收集本节点
+// 原始事件用）；存 ref 以免调用方内联闭包变化导致 SSE 重连。不传则零行为变化。
+import { useEffect, useRef, useState } from 'react';
 import { api } from './client';
 import { useRunStore } from '../store/runStore';
 import type { FsEvent } from './types';
@@ -12,9 +14,16 @@ import type { FsEvent } from './types';
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 10_000;
 
-export function useRunEvents(runId: string | null): { connected: boolean } {
+export function useRunEvents(
+  runId: string | null,
+  onEvent?: (ev: FsEvent) => void,
+): { connected: boolean } {
   const [connected, setConnected] = useState(false);
   const apply = useRunStore((s) => s.apply);
+  const onEventRef = useRef(onEvent);
+  useEffect(() => {
+    onEventRef.current = onEvent;
+  });
 
   useEffect(() => {
     if (!runId) {
@@ -37,7 +46,9 @@ export function useRunEvents(runId: string | null): { connected: boolean } {
       // 后端帧带 event: "fs"，必须 addEventListener；onmessage 收不到命名事件
       es.addEventListener('fs', (e: MessageEvent<string>) => {
         try {
-          apply(JSON.parse(e.data) as FsEvent);
+          const ev = JSON.parse(e.data) as FsEvent;
+          apply(ev);
+          onEventRef.current?.(ev);
         } catch {
           /* 坏帧忽略，不断流 */
         }

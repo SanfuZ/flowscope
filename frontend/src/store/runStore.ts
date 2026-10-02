@@ -20,6 +20,8 @@ export interface NodeView {
   status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
   startedAt?: string;
   endedAt?: string;
+  /** node.started payload.prompt（M2c Task 1）：渲染后的输入 prompt，会话视图用户气泡数据源。 */
+  prompt?: string;
   message: string;
   reasoning: string[];
   tools: ToolInfo[];
@@ -28,6 +30,8 @@ export interface NodeView {
   lastToolTitle?: string;
   error?: string;
 }
+
+export type NodeStatus = NodeView['status'];
 
 export interface RunView {
   runId: string;
@@ -81,8 +85,16 @@ export function applyEvent(view: RunView, ev: FsEvent): RunView {
       next.status = 'interrupted';
       return next;
 
-    case 'node.started':
-      return withNode((n) => ({ ...n, status: 'running', startedAt: ev.ts }));
+    case 'node.started': {
+      // payload.prompt 为渲染后 prompt（M2c）；渲染失败路径无该字段 → 不覆盖
+      const prompt = ev.payload?.prompt;
+      return withNode((n) => ({
+        ...n,
+        status: 'running',
+        startedAt: ev.ts,
+        ...(typeof prompt === 'string' ? { prompt } : {}),
+      }));
+    }
     case 'node.finished':
       return withNode((n) => ({ ...n, status: 'succeeded', endedAt: ev.ts }));
     case 'node.failed':

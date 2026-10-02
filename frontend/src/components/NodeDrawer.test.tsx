@@ -1,6 +1,8 @@
 // 五 tab 各自渲染代表内容；artifact 拉取 mock 掉（vi.mock api 客户端）。
+// M2c：头部新增「会话视图」按钮（useNavigate）→ 渲染需 MemoryRouter 包裹。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { NodeView } from '../store/runStore';
@@ -31,7 +33,9 @@ function renderDrawer() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <NodeDrawer runId="run-1" nodeId="a" onClose={() => {}} />
+      <MemoryRouter initialEntries={['/runs/run-1']}>
+        <NodeDrawer runId="run-1" nodeId="a" onClose={() => {}} />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -88,6 +92,31 @@ describe('NodeDrawer：五 tab', () => {
     // artifact 经 react-query 异步返回（mock 的 getArtifact）
     await waitFor(() => expect(screen.getByText(/周报/)).toBeTruthy());
     expect(vi.mocked(api.getArtifact)).toHaveBeenCalledWith('run-1', 'a', 'output');
+  });
+});
+
+describe('NodeDrawer：会话视图入口（M2c）', () => {
+  it('头部「会话视图」按钮导航到 /runs/:runId/sess/:nodeId', () => {
+    useRunStore.getState().setRun({ ...emptyView('run-1', ['a']), nodes: { a: seededNode } });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/runs/run-1']}>
+          <Routes>
+            <Route
+              path="/runs/:runId"
+              element={<NodeDrawer runId="run-1" nodeId="a" onClose={() => {}} />}
+            />
+            <Route
+              path="/runs/:runId/sess/:nodeId"
+              element={<div data-testid="sess-probe">会话</div>}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId('drawer-open-session'));
+    expect(screen.getByTestId('sess-probe')).toBeTruthy(); // 已导航到会话路由
   });
 });
 
