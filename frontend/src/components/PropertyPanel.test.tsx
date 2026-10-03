@@ -191,6 +191,46 @@ describe('PropertyPanel：settings 态', () => {
     expect(useEditorStore.getState().model!.name).toBe('renamed');
     expect(useEditorStore.getState().dirty).toBe(true);
   });
+
+  it('新节点默认（T2）：失焦经 updateNodeDefaults 提交偏好，不进历史、不置脏', () => {
+    useEditorStore.getState().loadBlank();
+    useEditorStore.getState().updateNodeDefaults({ retryMax: 2, backoffMs: 3000, timeoutMs: 600000 });
+    useEditorStore.getState().markSaved();
+    renderPanel();
+
+    // 草稿回填自 store 现值
+    const retry = screen.getByLabelText('新节点重试次数') as HTMLInputElement;
+    const backoff = screen.getByLabelText('新节点重试退避(ms)') as HTMLInputElement;
+    const timeout = screen.getByLabelText('新节点超时(ms)') as HTMLInputElement;
+    expect(retry.value).toBe('2');
+    expect(backoff.value).toBe('3000');
+    expect(timeout.value).toBe('600000');
+
+    // 失焦提交：写偏好，不动文档（dirty=false、无历史）
+    fireEvent.change(retry, { target: { value: '5' } });
+    fireEvent.blur(retry);
+    fireEvent.change(timeout, { target: { value: '0' } }); // 0=不限时，合法
+    fireEvent.blur(timeout);
+    const s = useEditorStore.getState();
+    expect(s.newNodeDefaults).toEqual({ retryMax: 5, backoffMs: 3000, timeoutMs: 0 });
+    expect(s.dirty).toBe(false);
+    expect(s.past).toEqual([]);
+
+    // 空串 = 放弃编辑，保留现值；负数/非数字不提交
+    fireEvent.change(retry, { target: { value: '' } });
+    fireEvent.blur(retry);
+    expect(useEditorStore.getState().newNodeDefaults.retryMax).toBe(5);
+    fireEvent.change(retry, { target: { value: '-1' } });
+    fireEvent.blur(retry);
+    expect(useEditorStore.getState().newNodeDefaults.retryMax).toBe(5);
+
+    // 不改已存在节点：文档内 step1 仍无 retry/timeout（播种只发生在 addNode）
+    expect(useEditorStore.getState().model!.nodes[0]).toEqual({
+      id: 'step1',
+      agent: 'mock',
+      prompt: '',
+    });
+  });
 });
 
 describe('PropertyPanel：底部公共校验区', () => {

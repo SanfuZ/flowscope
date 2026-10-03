@@ -1,11 +1,16 @@
 // Task 3：编辑器 store（快照式撤销重做 / 级联编辑 / YAML 往返）。
 // 约定：直接经 useEditorStore.getState() 驱动动作，每用例从 loadBlank() 起步，
 // 避免用例间共享残留状态（zustand 模块级单例）。
+// T2：newNodeDefaults 是编辑器偏好（loadBlank/loadYaml 均不重置），改动它的
+// 用例须自带恢复，避免污染同文件后续用例的 addNode 播种。
 import { describe, expect, it } from 'vitest';
 import { serializeWorkflowYaml } from '../api/workflowModel';
-import { useEditorStore } from './editorStore';
+import { DEFAULT_NEW_NODE_DEFAULTS, useEditorStore } from './editorStore';
 
 const S = () => useEditorStore.getState();
+
+/** 恢复新节点默认偏好（T2 用例间的隔离）。 */
+const resetDefaults = () => S().updateNodeDefaults({ ...DEFAULT_NEW_NODE_DEFAULTS });
 
 describe('loadYaml / loadBlank：文档装载', () => {
   it('loadYaml 解析成功：loaded=true、重置历史/dirty/parseErrors/selected', () => {
@@ -69,7 +74,8 @@ describe('loadYaml / loadBlank：文档装载', () => {
 });
 
 describe('addNode / updateNode / removeNode：节点级编辑', () => {
-  it('addNode 自增 id 避撞，默认内容 {id, agent, prompt: ""}，默认位置级联，选中新节点', () => {
+  it('addNode 自增 id 避撞，按新节点默认偏好播种 retry/timeout，默认位置级联，选中新节点', () => {
+    resetDefaults(); // 默认 {retryMax:2, backoffMs:3000, timeoutMs:600000}
     S().loadBlank();
     const a = S().addNode('mock');
     expect(a).toBe('node-1');
@@ -77,7 +83,13 @@ describe('addNode / updateNode / removeNode：节点级编辑', () => {
     expect(b).toBe('node-2');
     const s = S();
     const added = s.model!.nodes.find((n) => n.id === 'node-1')!;
-    expect(added).toEqual({ id: 'node-1', agent: 'mock', prompt: '' });
+    expect(added).toEqual({
+      id: 'node-1',
+      agent: 'mock',
+      prompt: '',
+      retry: { max: 2, backoff_ms: 3000 }, // 默认偏好播种
+      timeout_ms: 600000,
+    });
     // 默认位置视觉级联：loadBlank 后已有 1 节点 → count=1 → {x: 80+40*1, y: 80}
     expect(s.positions['node-1']).toEqual({ x: 120, y: 80 });
     expect(s.positions['node-2']).toEqual({ x: 160, y: 80 });
@@ -148,6 +160,68 @@ describe('addNode / updateNode / removeNode：节点级编辑', () => {
     expect(s.model!.nodes.map((n) => n.id)).toEqual(['step1', c]);
     expect(s.model!.edges).toEqual([]); // step1→b 与 b→c 均随节点删除
     expect(s.positions[b]).toBeUndefined();
+  });
+});
+
+describe('newNodeDefaults / updateNodeDefaults：新节点默认偏好（T2）', () => {
+  it('默认值 {retryMax:2, backoffMs:3000, timeoutMs:600000}；updateNodeDefaults 浅合并', () => {
+    resetDefaults();
+    expect(S().newNodeDefaults).toEqual({ retryMax: 2, backoffMs: 3000, timeoutMs: 600000 });
+    S().updateNodeDefaults({ retryMax: 5 });
+    expect(S().newNodeDefaults).toEqual({ retryMax: 5, backoffMs: 3000, timeoutMs: 600000 });
+    resetDefaults();
+  });
+
+  it('addNode 播种自定义默认值；retryMax/timeoutMs 为 0 时省略对应字段', () => {
+    S().loadBlank();
+    const added = (id: string) => S().model!.nodes.find((n) => n.id === id)!;
+    // 全部置 0：0=不重试/不限时 → 节点不含 retry/timeout_ms 字段
+    S().updateNodeDefaults({ retryMax: 0, timeoutMs: 0 });
+    expect(S().addNode('mock')).toBe('node-1');
+    expect(added('node-1')).toEqual({ id: 'node-1', agent: 'mock', prompt: '' });
+
+    // 仅超时置 0：retry 播种、timeout 省略
+    S().updateNodeDefaults({ retryMax: 3, backoffMs: 250, timeoutMs: 0 });
+    expect(S().addNode('llm')).toBe('node-2');
+    expect(added('node-2')).toEqual({
+      id: 'node-2',
+      agent: 'llm',
+      prompt: '',
+      retry: { max: 3, backoff_ms: 250 },
+    });
+
+    // 仅重试置 0：timeout 播种、retry 省略
+    S().updateNodeDefaults({ retryMax: 0, timeoutMs: 60000 });
+    expect(S().addNode('llm')).toBe('node-3');
+    expect(added('node-3')).toEqual({ id: 'node-3', agent: 'llm', prompt: '', timeout_ms: 60000 });
+    resetDefaults();
+  });
+
+  it('updateNodeDefaults 不进历史、不置脏（编辑器偏好而非文档内容）', () => {
+    S().loadBlank();
+    S().markSaved(); // 清掉 loadBlank 后可能残留的脏态
+    S().updateNodeDefaults({ retryMax: 7 });
+    const s = S();
+    expect(s.dirty).toBe(false);
+    expect(s.past).toEqual([]); // 未压历史
+    expect(s.future).toEqual([]);
+    // 撤销栈也不受其影响：addNode 后 undo 仍精确回退节点
+    S().addNode('mock');
+    S().undo();
+    expect(S().model!.nodes.length).toBe(1);
+    resetDefaults();
+  });
+
+  it('loadYaml/loadBlank 不重置 newNodeDefaults（跨文档持久）', () => {
+    resetDefaults();
+    S().updateNodeDefaults({ retryMax: 9 });
+    S().loadBlank();
+    expect(S().newNodeDefaults.retryMax).toBe(9);
+    S().loadYaml(
+      serializeWorkflowYaml({ name: 'x', version: 1, params: {}, nodes: [], edges: [] }),
+    );
+    expect(S().newNodeDefaults.retryMax).toBe(9);
+    resetDefaults();
   });
 });
 

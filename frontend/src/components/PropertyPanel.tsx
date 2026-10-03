@@ -11,7 +11,9 @@
 //      三件套留空、仅 raw 可表达）。「清除条件」when → undefined；「删除连线」删边并清选中。
 //   ③ settings 态（selected 为 null 或 {type:'settings'}）—— name（失焦）/ version（失焦）/
 //      params 键值编辑器（行 = 参数名 + 参数值 + 删除；「添加参数」追加空行；值按标量解析
-//      true/false → 布尔、整数 → number、其余字符串；任一行失焦整体提交 updateModelMeta）。
+//      true/false → 布尔、整数 → number、其余字符串；任一行失焦整体提交 updateModelMeta）/
+//      新节点默认（T2：retry/backoff/timeout 三数字，失焦提交 updateNodeDefaults——
+//      编辑器偏好，不进历史不置脏，只影响此后 addNode 的播种，0=不重试/不限时）。
 // 公共底部：problems 逐条红字展示，空数组显示「✓ 校验通过」。
 // 提交纪律：受控读 store，本地草稿 + 失焦/防抖/受控 onChange 时刻写 store；
 // 历史（pushHistory）与 dirty 由 store 动作统一管理，面板不触碰 past/future。
@@ -499,13 +501,23 @@ function SettingsForm() {
   // 父组件保证 model 非空才挂载本表单
   const model = useEditorStore((s) => s.model)!;
   const updateModelMeta = useEditorStore((s) => s.updateModelMeta);
+  // T2：新节点默认偏好（编辑器偏好，非文档内容）——updateNodeDefaults 不进
+  // 历史、不置脏，本区因此不参与脏标记，也不进撤销栈
+  const newNodeDefaults = useEditorStore((s) => s.newNodeDefaults);
+  const updateNodeDefaults = useEditorStore((s) => s.updateNodeDefaults);
 
   const [nameDraft, setNameDraft] = useState(model.name);
   const [versionDraft, setVersionDraft] = useState(String(model.version));
   const [rows, setRows] = useState<ParamRow[]>(() => toParamRows(model.params));
 
+  // 新节点默认三个数字输入：本地草稿 + 失焦提交（镜像 version 字段的失焦纪律）
+  const [retryMaxDraft, setRetryMaxDraft] = useState(String(newNodeDefaults.retryMax));
+  const [backoffMsDraft, setBackoffMsDraft] = useState(String(newNodeDefaults.backoffMs));
+  const [timeoutMsDraft, setTimeoutMsDraft] = useState(String(newNodeDefaults.timeoutMs));
+
   // store 回写/撤销重做/切换文档 → 草稿回填。依赖各字段自身标识：
-  // params 以引用为依赖，仅 params 提交时变化，其它字段编辑不会误清行草稿
+  // params 以引用为依赖，仅 params 提交时变化，其它字段编辑不会误清行草稿；
+  // 新节点默认以对象引用为依赖（updateNodeDefaults 每次整体换引用）
   useEffect(() => {
     setNameDraft(model.name);
   }, [model.name]);
@@ -515,6 +527,11 @@ function SettingsForm() {
   useEffect(() => {
     setRows(toParamRows(model.params));
   }, [model.params]);
+  useEffect(() => {
+    setRetryMaxDraft(String(newNodeDefaults.retryMax));
+    setBackoffMsDraft(String(newNodeDefaults.backoffMs));
+    setTimeoutMsDraft(String(newNodeDefaults.timeoutMs));
+  }, [newNodeDefaults]);
 
   /** 任一行失焦/删行：整体提交 params（空名行跳过；后同名覆盖先名）。 */
   const commitParams = (next: ParamRow[]) => {
@@ -525,6 +542,16 @@ function SettingsForm() {
       params[k] = parseParamScalar(r.v);
     }
     updateModelMeta({ params });
+  };
+
+  /** 新节点默认数字失焦提交：空串 = 放弃编辑保留现值（偏好无「未设」语义）；
+   *  负数/非有限数不提交；0 合法（0=不重试/不限时，addNode 省略对应字段）。 */
+  const commitDefaultNum = (v: string, apply: (n: number) => void) => {
+    const t = v.trim();
+    if (t === '') return;
+    const n = Number(t);
+    if (!Number.isFinite(n) || n < 0) return;
+    apply(n);
   };
 
   return (
@@ -597,6 +624,55 @@ function SettingsForm() {
         <button type="button" className="fs-btn" onClick={() => setRows([...rows, { k: '', v: '' }])}>
           添加参数
         </button>
+      </div>
+
+      {/* T2：新节点默认——只影响此后 addNode 的播种值，不改已存在节点。
+          失焦提交 updateNodeDefaults（不进历史/不置脏，本区无脏标记语义）。 */}
+      <div className="fs-form-row">
+        <div className="fs-form-label">新节点默认</div>
+        <div className="fs-form-grid">
+          <div className="fs-form-row">
+            <label className="fs-form-label">
+              新节点重试次数
+              <input
+                className="fs-form-input"
+                type="number"
+                min={0}
+                value={retryMaxDraft}
+                onChange={(e) => setRetryMaxDraft(e.target.value)}
+                onBlur={() => commitDefaultNum(retryMaxDraft, (n) => updateNodeDefaults({ retryMax: n }))}
+              />
+            </label>
+            <div className="fs-form-hint">0=不重试</div>
+          </div>
+          <div className="fs-form-row">
+            <label className="fs-form-label">
+              新节点重试退避(ms)
+              <input
+                className="fs-form-input"
+                type="number"
+                min={0}
+                value={backoffMsDraft}
+                onChange={(e) => setBackoffMsDraft(e.target.value)}
+                onBlur={() => commitDefaultNum(backoffMsDraft, (n) => updateNodeDefaults({ backoffMs: n }))}
+              />
+            </label>
+          </div>
+          <div className="fs-form-row">
+            <label className="fs-form-label">
+              新节点超时(ms)
+              <input
+                className="fs-form-input"
+                type="number"
+                min={0}
+                value={timeoutMsDraft}
+                onChange={(e) => setTimeoutMsDraft(e.target.value)}
+                onBlur={() => commitDefaultNum(timeoutMsDraft, (n) => updateNodeDefaults({ timeoutMs: n }))}
+              />
+            </label>
+            <div className="fs-form-hint">0=不限时</div>
+          </div>
+        </div>
       </div>
     </div>
   );

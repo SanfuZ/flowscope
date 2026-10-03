@@ -5,7 +5,9 @@
 //   - store 宽松：id 撞号/自环/悬空引用照样存入，合法性归 lib/validate.ts
 //     （与 api/workflowModel.ts 只管结构校验同一分层原则）；
 //   - setPositions/setSelection/markSaved 不进历史；setPositions 不动
-//     dirty（位置非文档内容，保存的 YAML 不含它）；
+//     dirty（位置非文档内容，保存的 YAML 不含它）；updateNodeDefaults
+//     同层——新节点默认偏好（非文档内容），不进历史、不置脏、loadYaml/
+//     loadBlank 不重置，仅 addNode 播种时读取；
 //   - loadYaml 失败保留旧文档仅记 parseErrors，成功则整体重置（新文档）。
 import { create } from 'zustand';
 import { parseWorkflowModel, serializeWorkflowYaml } from '../api/workflowModel';
@@ -16,6 +18,20 @@ export interface EditorSnapshot {
   positions: Record<string, { x: number; y: number }>;
 }
 
+/** 新节点默认偏好（编辑器偏好而非文档内容）：addNode 播种 retry/timeout 用。 */
+export interface NewNodeDefaults {
+  retryMax: number;
+  backoffMs: number;
+  timeoutMs: number;
+}
+
+/** 新节点默认值（语义：0=不重试 / 0=不限时——addNode 据此省略字段）。 */
+export const DEFAULT_NEW_NODE_DEFAULTS: NewNodeDefaults = {
+  retryMax: 2,
+  backoffMs: 3000,
+  timeoutMs: 600000,
+};
+
 export interface EditorState {
   loaded: boolean; // 是否已载入文档（new 或既有）
   model: WorkflowModel | null;
@@ -25,6 +41,10 @@ export interface EditorState {
   past: EditorSnapshot[];
   future: EditorSnapshot[]; // 上限各 50
   parseErrors: string[];
+  /** 新节点默认偏好（工作流设置里调）：addNode 播种 retry/timeout 用。
+   *  编辑器偏好而非文档内容——不进历史、不置脏，loadYaml/loadBlank 不重置。 */
+  newNodeDefaults: NewNodeDefaults;
+  updateNodeDefaults(patch: Partial<NewNodeDefaults>): void;
   loadYaml(yaml: string): void; // parseWorkflowModel 失败则 loaded 保持 false 并存 parseErrors
   loadBlank(): void; // {name:'my-workflow', version:1, 单节点 step1 agent 'mock'}
   addNode(agent: string, pos?: { x: number; y: number }): string; // 返回新 id（node-1 递增避撞）
@@ -78,6 +98,12 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       past: [],
       future: [],
       parseErrors: [],
+      newNodeDefaults: { ...DEFAULT_NEW_NODE_DEFAULTS },
+
+      // 编辑器偏好：整体浅合并，不进历史、不置脏（与 setPositions/setSelection 同层）
+      updateNodeDefaults: (patch) => {
+        set({ newNodeDefaults: { ...get().newNodeDefaults, ...patch } });
+      },
 
       loadYaml: (yaml) => {
         const { model, errors } = parseWorkflowModel(yaml);
@@ -127,10 +153,16 @@ export const useEditorStore = create<EditorState>()((set, get) => {
           x: 80 + 40 * (model.nodes.length % 4),
           y: 80 + 120 * Math.floor(model.nodes.length / 4),
         };
+        // 按偏好播种 retry/timeout：0 省略字段（0=不重试/不限时），不写半成品的
+        // retry: {max: 0}——YAML 层 retry/timeout 本就是可省字段（后端 serde 权威）
+        const d = get().newNodeDefaults;
+        const seed: Partial<NodeModel> = {};
+        if (d.retryMax > 0) seed.retry = { max: d.retryMax, backoff_ms: d.backoffMs };
+        if (d.timeoutMs > 0) seed.timeout_ms = d.timeoutMs;
         const history = pushHistory();
         set({
           ...history,
-          model: { ...model, nodes: [...model.nodes, { id, agent, prompt: '' }] },
+          model: { ...model, nodes: [...model.nodes, { id, agent, prompt: '', ...seed }] },
           positions: { ...positions, [id]: p },
           selected: { type: 'node', id },
           dirty: true,
