@@ -242,6 +242,32 @@ edges: []
     expect(useEditorStore.getState().model!.nodes[0].agent).toBe('mock');
     expect(useEditorStore.getState().dirty).toBe(false); // 干净文档可直接保存
   });
+
+  it('导入解析失败的 YAML：自动打开 YAML 层展示原文与错误，修复后应用到画布落地', async () => {
+    const BAD_YAML = 'meta: [broken';
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS_WITH_ZCODE);
+    renderAt('/workflows/new', { importedYaml: BAD_YAML });
+
+    // YAML 层自动打开：文本框 = 导入原文（此时 model null，toYaml() 为空串
+    // 导不出——快照必须来自导入原文），store 的 parseErrors 就地显示
+    const ta = (await screen.findByLabelText('YAML 内容')) as HTMLTextAreaElement;
+    expect(ta.value).toBe(BAD_YAML);
+    screen.getByText(/YAML 语法错误/);
+    expect(useEditorStore.getState().model).toBeNull(); // 画布为空（未落地）
+
+    // 用户在文本框修复为最小合法工作流 → 应用到画布 → 文档落地、浮层关闭
+    fireEvent.change(ta, {
+      target: {
+        value:
+          'meta: {name: fixed-wf, version: 2}\nnodes:\n  - {id: n1, agent: m, prompt: p}\n',
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '应用到画布' }));
+    await waitFor(() => expect(useEditorStore.getState().model?.name).toBe('fixed-wf'));
+    expect(useEditorStore.getState().model!.version).toBe(2);
+    expect(useEditorStore.getState().model!.nodes[0].id).toBe('n1');
+    expect(screen.queryByLabelText('YAML 内容')).toBeNull(); // 成功后关闭
+  });
 });
 
 describe('WorkflowDetail：YAML 源码浮层', () => {

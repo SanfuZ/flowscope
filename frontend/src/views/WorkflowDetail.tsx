@@ -31,6 +31,8 @@
 //   - YAML 源码：fixed 右侧滑入浮层（520px）。打开时对 toYaml() 取快照，
 //     打开期间画布编辑不回写文本（快照语义）；[刷新] 重取；[应用到画布] →
 //     loadYaml，解析失败就地显示 parseErrors 且不关闭，成功关闭浮层。
+//     文件夹导入的 YAML 解析失败时自动打开浮层展示原文+错误（model null、
+//     toYaml() 导不出），修复后应用落地画布并退出「导入失败」态。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useBlocker, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -76,6 +78,9 @@ export default function WorkflowDetail() {
   // --- 载入（new → loadBlank；既有 → loadYaml，含 refetch/切 id 策略） ---
   const lastDocRef = useRef<{ id: string; data: WorkflowDetailRow } | null>(null);
   const [staleNotice, setStaleNotice] = useState(false);
+  // 导入解析失败的原始 YAML（非 null = 处于「导入失败」态）：YAML 源码层的
+  // 快照/错误展示改用它兜底（此时 model null，toYaml() 为空串导不出内容）。
+  const [importFailedYaml, setImportFailedYaml] = useState<string | null>(null);
   // 文件夹工作流「在编辑器打开」入口（FolderWorkflows → navigate state）：
   // importedYaml 是权威内容 → 替代 loadBlank 直接 loadYaml；同时置 importedRef
   // 令下方种子换选 effect 跳过（导入的单节点 mock 文档不被自动改 agent）。
@@ -88,6 +93,15 @@ export default function WorkflowDetail() {
       if (hasImport) {
         loadYaml(importedYaml as string); // 幂等：同一 YAML 重载为同一文档
         importedRef.current = true;
+        // 导入解析失败（如文件夹里的坏 YAML）：loadYaml 不落地文档（model
+        // 保持 null、画布为空），且 toYaml() 无从导出 → 自动打开 YAML 源码
+        // 展示原文 + 解析错误，用户就地修复后「应用到画布」落地文档。
+        if (useEditorStore.getState().parseErrors.length > 0) {
+          setImportFailedYaml(importedYaml as string);
+          setYamlDraft(importedYaml as string);
+          setYamlErrors(useEditorStore.getState().parseErrors);
+          setYamlOpen(true);
+        }
       } else {
         importedRef.current = false;
         loadBlank(); // 幂等：StrictMode 双调用重置为同一空白文档
@@ -259,10 +273,19 @@ export default function WorkflowDetail() {
   const [yamlDraft, setYamlDraft] = useState('');
   const [yamlErrors, setYamlErrors] = useState<string[]>([]);
   const openYamlView = () => {
+    if (importFailedYaml != null) {
+      // 导入失败态：快照用导入原文（toYaml() 为空串），并回显 store 解析错误
+      setYamlDraft(importFailedYaml);
+      setYamlErrors(useEditorStore.getState().parseErrors);
+      setYamlOpen(true);
+      return;
+    }
     setYamlDraft(useEditorStore.getState().toYaml());
     setYamlErrors([]);
     setYamlOpen(true);
   };
+  // [刷新]：导入失败态且用户未修复时 toYaml() 为空串、草稿会被清空——可接受
+  // （草稿原文已展示过；重新点「YAML 源码」按导入失败态兜底取回原文）。
   const refreshYamlDraft = () => {
     setYamlDraft(useEditorStore.getState().toYaml());
     setYamlErrors([]);
@@ -275,6 +298,7 @@ export default function WorkflowDetail() {
       return;
     }
     setYamlErrors([]);
+    setImportFailedYaml(null); // 修复并应用成功：退出「导入失败」态
     setYamlOpen(false);
   };
 
