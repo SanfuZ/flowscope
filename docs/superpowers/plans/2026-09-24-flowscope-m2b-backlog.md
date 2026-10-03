@@ -1,3 +1,5 @@
+> ⚠️ 本文档已归档：遗留待办收编至 specs/2026-10-02-flowscope-current-state.md §8（其中画布编辑器/表单编辑/prompt 回显已完成）。仅作历史记录。
+
 # FlowScope M2b 待办清单（M2a 终审产出）
 
 来源：2026-09-24 M2a（画布编辑器）全分支终审（SHIP-WITH-LIST，零 MUST-FIX）。

@@ -1,7 +1,7 @@
 # FlowScope 设计文档
 
 - 日期：2026-09-22
-- 状态：待用户审阅
+- 状态：已交付（历史设计记录——M1 设计 + M2a 编辑器修订；**系统现状以此为准：specs/2026-10-02-flowscope-current-state.md**）
 - 工作名：FlowScope（目录 `agent-flow-scope`，可随时改名）
 
 ## 1. 概述

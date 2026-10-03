@@ -1,3 +1,5 @@
+> ⚠️ 本文档已归档：大部分条目已由 M2a/M2c 交付或收编至 specs/2026-10-02-flowscope-current-state.md §8（遗留待办）。仅作历史记录，勿按此执行。
+
 # FlowScope M2 待办清单（终审分诊产出）
 
 来源：2026-09-23 M1 全分支终审评审（SHIP-WITH-LIST，两项 MUST-FIX 已于 ad11cef 修复）。

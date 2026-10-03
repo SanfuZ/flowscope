@@ -291,9 +291,10 @@ E2E 首次运行需先 `npx playwright install chromium`。
 
 ## 设计文档
 
-- 设计文档（spec）：`docs/superpowers/specs/2026-09-22-flowscope-design.md`
-- M1 实施计划：`docs/superpowers/plans/2026-09-22-flowscope-m1.md`
-- M2 待办清单：`docs/superpowers/plans/2026-09-23-flowscope-m2-backlog.md`
+- **系统现状（权威，整体修改从这里出发）**：`docs/superpowers/specs/2026-10-02-flowscope-current-state.md`
+- 文档索引与交付日志：`docs/superpowers/README.md`、`docs/superpowers/CHANGELOG.md`
+- 历史设计（M1 spec）：`docs/superpowers/specs/2026-09-22-flowscope-design.md`
+- 各里程碑计划与归档待办：`docs/superpowers/plans/`
 
 ---
 
@@ -310,7 +311,7 @@ core / mock-agent / 桌面壳三件套、ACP v1 会话层、工作流 DSL 与调
 ## M2 计划（节选，剩余）
 
 独立服务器 + Web 部署（远程承载引擎）、运行回放与瀑布时间线、渲染后 prompt 回显、
-agent 健康探活、桌面安装包。完整清单见 M2 待办清单。
+agent 健康探活、桌面安装包。完整清单见现状文档 §8（docs/superpowers/specs/2026-10-02-flowscope-current-state.md）。
 
 ## 已知限制（当前）
 
