@@ -10,7 +10,8 @@
 //     实时读 store.getState()，不会被拦截卡住；启动运行用 allowNextNavRef
 //     一次性放行（明确离开意图，不伪装已保存）。
 // 文档事实源在 editorStore（Task 3~5）；本页只做装配：
-//   - 载入：new → loadBlank()；既有 → wfQuery.data.yaml → loadYaml。
+//   - 载入：new → loadBlank()（或 location.state.importedYaml → loadYaml，
+//     文件夹工作流入口，见 effect 处注释）；既有 → wfQuery.data.yaml → loadYaml。
 //     T1 收尾：new 页 agents 就绪后自动把未碰过的 mock 种子换成首个非演示
 //     agent（详见 effect 处注释——脏态跳过、纯演示环境跳过、可撤销）。
 //     用 lastDocRef 记录已处理的 {id, data}（比简报的 !loaded 守卫更强：同一份
@@ -32,7 +33,7 @@
 //     loadYaml，解析失败就地显示 parseErrors 且不关闭，成功关闭浮层。
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useBlocker, useNavigate, useParams } from 'react-router-dom';
+import { useBlocker, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { api } from '../api/client';
 import type { WorkflowDetail as WorkflowDetailRow } from '../api/types';
@@ -75,9 +76,22 @@ export default function WorkflowDetail() {
   // --- 载入（new → loadBlank；既有 → loadYaml，含 refetch/切 id 策略） ---
   const lastDocRef = useRef<{ id: string; data: WorkflowDetailRow } | null>(null);
   const [staleNotice, setStaleNotice] = useState(false);
+  // 文件夹工作流「在编辑器打开」入口（FolderWorkflows → navigate state）：
+  // importedYaml 是权威内容 → 替代 loadBlank 直接 loadYaml；同时置 importedRef
+  // 令下方种子换选 effect 跳过（导入的单节点 mock 文档不被自动改 agent）。
+  const location = useLocation();
+  const importedRef = useRef(false);
+  const importedYaml = (location.state as { importedYaml?: unknown } | null)?.importedYaml;
+  const hasImport = typeof importedYaml === 'string' && importedYaml.length > 0;
   useEffect(() => {
     if (isNew) {
-      loadBlank(); // 幂等：StrictMode 双调用重置为同一空白文档
+      if (hasImport) {
+        loadYaml(importedYaml as string); // 幂等：同一 YAML 重载为同一文档
+        importedRef.current = true;
+      } else {
+        importedRef.current = false;
+        loadBlank(); // 幂等：StrictMode 双调用重置为同一空白文档
+      }
       lastDocRef.current = null;
       setStaleNotice(false);
       return;
@@ -99,7 +113,7 @@ export default function WorkflowDetail() {
       loadYaml(data.yaml);
       setStaleNotice(false);
     }
-  }, [wfQuery.data, id, isNew, loadBlank, loadYaml]);
+  }, [wfQuery.data, id, isNew, loadBlank, loadYaml, hasImport, importedYaml]);
 
   // --- T1 收尾：新建工作流种子节点自动选用首个非演示 agent ---
   // loadBlank 的种子固定 agent 'mock'（演示 agent）；T1 起 demo agent 不进
@@ -116,6 +130,7 @@ export default function WorkflowDetail() {
   // when 求值的是 source 输出，zcode 空跑不产 ok=true，node-1 照旧 skipped）。
   // 走 updateNode 正常编辑纪律（进历史、置脏）：用户 Ctrl+Z 可撤回换选。
   useEffect(() => {
+    if (importedRef.current) return; // 导入的 YAML 是权威内容：不做种子换选
     if (!isNew || dirty || !loaded) return;
     const m = useEditorStore.getState().model;
     if (m == null || m.nodes.length !== 1) return;

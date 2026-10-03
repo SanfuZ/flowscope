@@ -33,8 +33,28 @@ interface WorkflowRow {
   yaml: string;
 }
 
+/** GET /api/fs/workflows 行：文件夹里的一个工作流 YAML。valid:false 时
+ *  name 回退文件名去扩展名、version 为 null、error 带解析消息——yaml 仍是
+ *  文件全文，失败项也可带进编辑器修。 */
+export interface FolderWorkflow {
+  file: string;
+  name: string;
+  version: number | null;
+  valid: boolean;
+  error: string | null;
+  yaml: string;
+}
+
 export const api = {
   listWorkflows: () => req<WorkflowSummary[]>('/api/workflows'),
+
+  /** GET /api/fs/workflows?dir=…：只读列出磁盘目录中的工作流 YAML（后端已按
+   *  名称字母序排序）；dir 省略时用后端默认目录（env FLOWSCOPE_WORKFLOW_DIR
+   *  → ~/.flowscope/workflows），响应里的 dir 为解析后的实际目录。 */
+  listFolderWorkflows: (dir?: string): Promise<{ dir: string; files: FolderWorkflow[] }> =>
+    req<{ dir: string; files: FolderWorkflow[] }>(
+      `/api/fs/workflows${dir ? `?dir=${encodeURIComponent(dir)}` : ''}`,
+    ),
 
   /** GET /api/agents：agents.toml 注册的 agent 清单（画布编辑器面板）。 */
   listAgents: (): Promise<AgentRow[]> => req<AgentRow[]>('/api/agents'),

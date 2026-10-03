@@ -54,7 +54,8 @@ edges: []
 // 渲染到 data router（createMemoryRouter + RouterProvider）：save-ux 的
 // useBlocker（未保存离开拦截）在 react-router 6.19+ 仅于 data router 上下文
 // 可用。返回 render 结果 + router（供用例直接 router.navigate 触发拦截）。
-function renderAt(path: string) {
+// state：可选路由 state（文件夹工作流导入入口用 location.state.importedYaml）。
+function renderAt(path: string, state?: unknown) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createMemoryRouter(
     [
@@ -62,7 +63,7 @@ function renderAt(path: string) {
       { path: '/runs/:id', element: <div data-testid="run-probe">run page</div> },
       { path: '/other', element: <div data-testid="other-page">other page</div> },
     ],
-    { initialEntries: [path] },
+    { initialEntries: [{ pathname: path, state }] },
   );
   const view = render(
     <QueryClientProvider client={qc}>
@@ -204,6 +205,42 @@ describe('WorkflowDetail：新建种子自动换选（T1 收尾）', () => {
     await act(async () => {});
     await act(async () => {}); // 再冲刷一轮，确认不会有延迟换选
     expect(useEditorStore.getState().model!.nodes[0].agent).toBe('mock');
+  });
+});
+
+describe('WorkflowDetail：文件夹工作流导入入口', () => {
+  // 含 zcode（非演示 agent）：若种子换选未被跳过，mock 会被自动换成 zcode。
+  const AGENTS_WITH_ZCODE = [
+    { key: 'mock', name: 'Mock', permission_default: 'ask', healthy: true },
+    { key: 'zcode', name: 'ZCode', permission_default: 'ask', healthy: true },
+  ];
+  // 刻意与空白种子同形（单节点 step1 + agent mock）：name/prompt 不同证明
+  // 载入的是导入内容而非 loadBlank；agent 保持 mock 证明种子换选 effect 被
+  // importedRef 跳过（否则注册表含 zcode 时会被自动换成 zcode）。
+  const IMPORTED_YAML = `meta:
+  name: imported-wf
+  version: 3
+nodes:
+  - id: step1
+    agent: mock
+    prompt: from-folder
+edges: []
+`;
+
+  it('/workflows/new 带 location.state.importedYaml：载入导入内容而非空白，且跳过种子换选', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS_WITH_ZCODE);
+    renderAt('/workflows/new', { importedYaml: IMPORTED_YAML });
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+    const m = useEditorStore.getState().model!;
+    expect(m.name).toBe('imported-wf'); // 不是 loadBlank 的 my-workflow
+    expect(m.version).toBe(3);
+    expect(m.nodes[0].id).toBe('step1');
+    expect(m.nodes[0].prompt).toBe('from-folder');
+    expect(m.nodes[0].agent).toBe('mock'); // 导入的 YAML 是权威内容
+    await act(async () => {}); // 冲刷 agents resolve 与后续 effects
+    await act(async () => {}); // 再冲刷一轮：确认没有延迟换选
+    expect(useEditorStore.getState().model!.nodes[0].agent).toBe('mock');
+    expect(useEditorStore.getState().dirty).toBe(false); // 干净文档可直接保存
   });
 });
 

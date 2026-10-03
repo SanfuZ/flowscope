@@ -1949,3 +1949,31 @@ select.fs-form-input {
   align-items: center;
   gap: 6px;
 }
+
+/* --- 工作流文件夹页（/folder）：目录输入条 --- */
+
+.fs-folder-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.fs-folder-bar label {
+  font-size: 12px;
+  color: var(--muted);
+  padding-bottom: 8px;
+  white-space: nowrap;
+}
+
+/* 复用 .fs-form-input 基础皮肤，行内布局下改为弹性行内宽 */
+.fs-folder-bar .fs-form-input {
+  flex: 1;
+  width: auto;
+  margin-top: 0;
+}
+
+.fs-folder-dir {
+  font-size: 12px;
+  margin-bottom: 12px;
+}

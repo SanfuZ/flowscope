@@ -15,6 +15,7 @@ import { ReactNode } from 'react';
 import '@xyflow/react/dist/style.css';
 import './styles.css';
 import NodeSession from './views/NodeSession';
+import FolderWorkflows from './views/FolderWorkflows';
 import RunList from './views/RunList';
 import RunMonitor from './views/RunMonitor';
 import WorkflowDetail from './views/WorkflowDetail';
@@ -49,6 +50,7 @@ const ICON_FLOW = (
     <path d="M5 8h3m0 0V3.5h3M8 8v3h3" />
   </>
 );
+const ICON_FOLDER = <path d="M1.5 4.5v7a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8l-1.5-2h-4a1 1 0 0 0-1 1z" />;
 
 function SideLink({ to, end, icon, children }: { to: string; end?: boolean; icon: ReactNode; children: string }) {
   return (
@@ -75,6 +77,9 @@ function AppShell() {
           </SideLink>
           <SideLink to="/workflows" icon={<Icon path={ICON_FLOW} />}>
             工作流
+          </SideLink>
+          <SideLink to="/folder" icon={<Icon path={ICON_FOLDER} />}>
+            文件夹
           </SideLink>
         </nav>
         <div className="fs-side__foot">
@@ -104,6 +109,7 @@ const router = createBrowserRouter([
       { index: true, element: <RunList /> },
       { path: 'workflows', element: <WorkflowList /> },
       { path: 'workflows/:id', element: <WorkflowDetail /> },
+      { path: 'folder', element: <FolderWorkflows /> },
       { path: 'runs/:id', element: <RunMonitor /> },
       { path: 'runs/:runId/sess/:nodeId', element: <NodeSessionRoute /> },
       { path: '*', element: <Navigate to="/" replace /> },
