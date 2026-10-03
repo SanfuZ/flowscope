@@ -23,7 +23,8 @@ vi.mock('../api/client', () => ({
   },
 }));
 
-const AGENTS = [{ key: 'mock', name: 'Mock', permission_default: 'ask', healthy: true }];
+// T1 起 Palette 过滤演示 agent（mock/bad-mock）——面板接线用例改用非演示 key `corp`。
+const AGENTS = [{ key: 'corp', name: 'Corp', permission_default: 'ask', healthy: true }];
 
 /** 校验通过的合法 YAML（save 门通过 → 保存可点）。 */
 const VALID_YAML = `meta:
@@ -120,7 +121,7 @@ describe('WorkflowDetail：工具栏', () => {
     expect(undo.disabled).toBe(true);
     expect(redoBtn.disabled).toBe(true);
 
-    fireEvent.click(await screen.findByTestId('palette-add-mock')); // 一次画布编辑
+    fireEvent.click(await screen.findByTestId('palette-add-corp')); // 一次画布编辑
     expect(undo.disabled).toBe(false);
     fireEvent.click(undo);
     expect(undo.disabled).toBe(true);
@@ -130,8 +131,8 @@ describe('WorkflowDetail：工具栏', () => {
   it('Ctrl+Z 撤销 / Ctrl+Shift+Z 重做（页面容器键盘）', async () => {
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
     const { container } = renderAt('/workflows/new');
-    await screen.findByTestId('palette-add-mock');
-    fireEvent.click(screen.getByTestId('palette-add-mock'));
+    await screen.findByTestId('palette-add-corp');
+    fireEvent.click(screen.getByTestId('palette-add-corp'));
     expect(useEditorStore.getState().model!.nodes.length).toBe(2);
     const page = container.querySelector('.fs-page--editor')!;
     fireEvent.keyDown(page, { key: 'z', ctrlKey: true });

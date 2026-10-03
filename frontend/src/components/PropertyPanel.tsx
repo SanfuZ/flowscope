@@ -262,6 +262,9 @@ function NodeForm({ node }: { node: NodeModel }) {
         )}
       </div>
 
+      {/* Agent 下拉不过滤演示 agent（与 Palette 相反）：属性面板服务于已存在的
+          文档——存量 mock 工作流仍需可查看/改选/运行，屏蔽会让它们失去可编辑性；
+          「隐藏演示 agent」只是新建引导语义，故仅 Palette 收敛列表。 */}
       <div className="fs-form-row">
         <label className="fs-form-label">
           Agent

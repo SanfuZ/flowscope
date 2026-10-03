@@ -7,14 +7,26 @@
 //     → 画布 onDrop 以落点坐标 addNode；
 //   - 「添加」按钮（键盘可达 / e2e 路径）→ addNode(key)，不传位置，
 //     由 store 视觉级联兜底。
+// 演示 agent 过滤：mock / bad-mock 是 FlowScope 内置演示 agent，一律不进
+// 新建面板（新建工作流面向企业 agent）；过滤后为空且确有注册（全是 demo）
+// 显示提示文案。注意不对称：PropertyPanel 的 Agent 下拉不过滤（存量 mock
+// 工作流仍可编辑）。e2e：冻结的 build-via-canvas.spec.ts 原经
+// palette-add-mock 搭建工作流，T1 起授权换成 palette-add-zcode（e2e home
+// bootstrap 在桥文件存在时自动注册 zcode，见 controller 裁定）。
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { useEditorStore } from '../store/editorStore';
+
+/** 内置演示 agent 的 key（新建面板过滤对象；导出供测试）。 */
+export const DEMO_AGENT_KEYS = new Set(['mock', 'bad-mock']);
 
 export default function Palette() {
   const agentsQuery = useQuery({ queryKey: ['agents'], queryFn: () => api.listAgents() });
   const addNode = useEditorStore((s) => s.addNode);
   const agents = agentsQuery.data;
+  // 严格过滤演示 agent（不回退展示——回退会让「隐藏 demo」语义形同虚设）；
+  // agents 未就绪时 visible 为空数组，由下方分支的加载/空态先行兜住
+  const visible = agents?.filter((a) => !DEMO_AGENT_KEYS.has(a.key)) ?? [];
 
   return (
     <aside className="fs-palette" data-testid="palette">
@@ -27,9 +39,13 @@ export default function Palette() {
         <div className="fs-palette__empty">加载 agent…</div>
       ) : agents.length === 0 ? (
         <div className="fs-palette__empty">未注册 agent，请编辑 agents.toml</div>
+      ) : visible.length === 0 ? (
+        <div className="fs-palette__empty">
+          内置演示 agent 已隐藏——注册企业 agent 后显示于此（现有使用 mock 的工作流不受影响）
+        </div>
       ) : (
         <ul className="fs-palette__list">
-          {agents.map((a) => (
+          {visible.map((a) => (
             <li
               key={a.key}
               className="fs-palette__item"

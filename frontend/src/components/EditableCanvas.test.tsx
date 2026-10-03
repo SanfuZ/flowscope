@@ -17,7 +17,9 @@ vi.mock('../api/client', () => ({
   api: { listAgents: vi.fn() },
 }));
 
-const AGENTS = [{ key: 'mock', name: 'Mock', permission_default: 'ask', healthy: true }];
+// T1 起 Palette 过滤演示 agent（mock/bad-mock）——palette 接线测试改用
+// 非演示 key `corp`（企业 agent 占位，断言语义不变）。
+const AGENTS = [{ key: 'corp', name: 'Corp', permission_default: 'ask', healthy: true }];
 
 // jsdom 未实现 ResizeObserver（React Flow 容器/节点测量依赖）：无操作桩。
 // 不模拟真实浏览器「observe 即回调」——那会走到 jsdom 缺失的
@@ -63,18 +65,18 @@ describe('EditableCanvas：palette 与画布接线', () => {
     useEditorStore.getState().loadBlank();
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
     renderCanvas();
-    expect(await screen.findByTestId('palette-add-mock')).toBeTruthy();
-    expect(screen.getByText(/◆ Mock/)).toBeTruthy();
+    expect(await screen.findByTestId('palette-add-corp')).toBeTruthy();
+    expect(screen.getByText(/◆ Corp/)).toBeTruthy();
   });
 
   it('palette 添加按钮向 store 增加节点并选中', async () => {
     useEditorStore.getState().loadBlank();
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
     renderCanvas();
-    fireEvent.click(await screen.findByTestId('palette-add-mock'));
+    fireEvent.click(await screen.findByTestId('palette-add-corp'));
     const s = useEditorStore.getState();
     expect(s.model!.nodes.length).toBe(2);
-    expect(s.model!.nodes[1]!.agent).toBe('mock');
+    expect(s.model!.nodes[1]!.agent).toBe('corp');
     expect(s.selected?.type).toBe('node');
   });
 
@@ -82,21 +84,21 @@ describe('EditableCanvas：palette 与画布接线', () => {
     useEditorStore.getState().loadBlank();
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
     const { container } = renderCanvas();
-    const add = await screen.findByTestId('palette-add-mock');
-    const row = container.querySelector('[data-agent-key="mock"]')!;
+    const add = await screen.findByTestId('palette-add-corp');
+    const row = container.querySelector('[data-agent-key="corp"]')!;
     expect(row).toBeTruthy();
     fireEvent.click(row); // 点行（不点按钮）
     expect(useEditorStore.getState().model!.nodes.length).toBe(2);
     fireEvent.click(add); // 点按钮：stopPropagation 防行 onClick 再加一次
     expect(useEditorStore.getState().model!.nodes.length).toBe(3);
-    expect(useEditorStore.getState().model!.nodes[2]!.agent).toBe('mock');
+    expect(useEditorStore.getState().model!.nodes[2]!.agent).toBe('corp');
   });
 
   it('save-ux：新增节点落场动画 fs-node--pop 750ms 后移除', async () => {
     useEditorStore.getState().loadBlank();
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
     const { container } = renderCanvas();
-    const add = await screen.findByTestId('palette-add-mock'); // 真定时器下等渲染就绪
+    const add = await screen.findByTestId('palette-add-corp'); // 真定时器下等渲染就绪
     vi.useFakeTimers(); // 之后调度的 750ms 清除计时器走假时钟
     try {
       fireEvent.click(add);

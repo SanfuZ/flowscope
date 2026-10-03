@@ -5,7 +5,9 @@
 //       → /runs/:id 节点点亮 + 顶栏徽章 finished。
 //
 // 选择器清单（全部来自真实实现，除授权的 run-status 外未为测试新增 hook）：
-// - Palette：`data-testid="palette-add-mock"`（agents.toml 的 mock agent「添加」按钮）；
+// - Palette：`data-testid="palette-add-zcode"`（T1 起 demo agent 不再进面板，
+//   经 controller 授权由 palette-add-mock 换成 zcode——e2e home bootstrap 在
+//   桥文件存在时自动注册 zcode）；
 // - EditableCanvas（RF12）：节点包裹层 `.react-flow__node[data-id]`（data-id = 节点 id），
 //   handle `.react-flow__handle.source|target`（NodeCard 的 Right/Left Handle），
 //   边 `.react-flow__edge[data-id="from->to"]`（store 边 id 约定 `${from}->${to}`），
@@ -96,7 +98,7 @@ async function dragConnect(page: Page, fromId: string, toId: string) {
  *  moveAside：连线前先把 node-1 拖开（后续要点击连线本身时必须让边露出来）。 */
 async function newWorkflowWithConnectedNode(page: Page, moveAside = false) {
   await page.goto('/workflows/new');
-  const paletteAdd = page.getByTestId('palette-add-mock');
+  const paletteAdd = page.getByTestId('palette-add-zcode');
   await expect(paletteAdd).toBeVisible();
   await paletteAdd.click();
   // addNode 视觉级联：node-1 出现后才允许读 boundingBox（防布局未稳）
