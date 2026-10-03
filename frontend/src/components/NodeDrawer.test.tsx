@@ -16,7 +16,8 @@ vi.mock('../api/client', () => ({
 const seededNode: NodeView = {
   status: 'succeeded',
   message: '你好 FlowScope',
-  reasoning: ['先思考一下'],
+  // T3：两段思考 → 单个折叠块，summary 计段数，body 换行连接
+  reasoning: ['先思考一下', '再确认数据源'],
   tools: [{ id: 't1', title: '查询数据库', kind: 'fetch', status: 'completed' }],
   plan: {
     entries: [
@@ -47,10 +48,18 @@ afterEach(() => {
 });
 
 describe('NodeDrawer：五 tab', () => {
-  it('默认消息 tab：message 文本 + reasoning 折叠块', () => {
+  it('默认消息 tab：message 文本 + reasoning 单折叠块（T3：默认收起、summary 计段数）', () => {
     renderDrawer();
     expect(screen.getByText('你好 FlowScope')).toBeTruthy();
-    expect(screen.getByText(/先思考一下/)).toBeTruthy();
+    // T3：单块 —— 不再是每段一个 details
+    const blocks = document.querySelectorAll('.fs-reasoning__block');
+    expect(blocks).toHaveLength(1);
+    const block = blocks[0] as HTMLDetailsElement;
+    expect(block.hasAttribute('open')).toBe(false); // 默认收起
+    expect(block.querySelector('summary')!.textContent).toBe('思考过程 · 2 段');
+    // body = 各段换行连接（两段文本都在块内）
+    expect(block.textContent).toContain('先思考一下');
+    expect(block.textContent).toContain('再确认数据源');
     expect(screen.getByTestId('drawer-message')).toBeTruthy();
   });
 

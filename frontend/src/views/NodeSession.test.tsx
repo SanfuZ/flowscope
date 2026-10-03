@@ -133,6 +133,8 @@ describe('NodeSession：对话流回放', () => {
     const think = screen.getByTestId('think-block');
     expect(think.textContent).toContain('先想想');
     expect(think.hasAttribute('open')).toBe(false); // 终态默认收起
+    // T3：summary 计数摘要（1 段，join 后 3 字）
+    expect(think.querySelector('summary')!.textContent).toBe('思考过程 · 1 段 · 共 3 字');
 
     expect(screen.getByTestId('agent-message').textContent).toBe('你好');
 
@@ -144,14 +146,30 @@ describe('NodeSession：对话流回放', () => {
     expect(screen.getByTestId('stop-chip').textContent).toContain('node.finished');
   });
 
-  it('运行态：思考块默认展开、工具徽标 running、无 stop chip；顶栏展示节点标识', async () => {
+  it('运行态：思考块也默认收起（T3 去掉 open={running}）、工具徽标 running、无 stop chip；顶栏展示节点标识', async () => {
     await renderAndSeed(RUNNING_EVENTS);
 
-    expect(screen.getByTestId('think-block').hasAttribute('open')).toBe(true); // 运行中默认展开
+    expect(screen.getByTestId('think-block').hasAttribute('open')).toBe(false); // 运行中同样收起
+    // 多段流式思考：段数照实计数（'想想…' 1 段）
+    expect(screen.getByTestId('think-block').querySelector('summary')!.textContent).toBe(
+      '思考过程 · 1 段 · 共 3 字',
+    );
     expect(screen.getByTestId('tool-card').textContent).toContain('running');
     expect(screen.queryByTestId('stop-chip')).toBeNull();
     expect(screen.getByTestId('sess-conn').textContent).toContain('SSE');
     expect(screen.getByTestId('sess-topbar').textContent).toContain('mock / a'); // agent / nodeId
+  });
+
+  it('T3：思考总字数 >=1000 显示 1.2k 样式，summary 段数照实', async () => {
+    await renderAndSeed([
+      frame(1, 'node.started', { prompt: '做X' }),
+      frame(2, 'msg.delta', { delta: '想'.repeat(600), contentType: 'reasoning' }),
+      frame(3, 'msg.delta', { delta: '再'.repeat(600), contentType: 'reasoning' }),
+    ]);
+    // 2 段、join 后 1200 字 → 1.2k
+    expect(screen.getByTestId('think-block').querySelector('summary')!.textContent).toBe(
+      '思考过程 · 2 段 · 共 1.2k 字',
+    );
   });
 
   it('无事件：banner 显示等待事件…、无用户气泡', async () => {

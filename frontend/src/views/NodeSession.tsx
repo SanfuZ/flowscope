@@ -33,6 +33,11 @@ const STOP_KIND: Partial<Record<NodeStatus, string>> = {
   skipped: 'node.skipped',
 };
 
+/** 思考摘要的总字数显示：>=1000 显示 1.2k 样式，其余原样。 */
+function fmtLen(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
 export default function NodeSession({ runId, nodeId }: { runId: string; nodeId: string }) {
   const runQuery = useQuery({ queryKey: ['run', runId], queryFn: () => api.getRun(runId) });
   const run = runQuery.data;
@@ -134,10 +139,13 @@ export default function NodeSession({ runId, nodeId }: { runId: string; nodeId: 
           )}
           <div className="fs-sess__turn" data-testid="agent-turn">
             {node && node.reasoning.length > 0 && (
-              // 运行中默认展开（流式可见），终态默认收起；React 仅在
-              // running→终态跳变时改 open 属性，用户手动开合不被覆盖
-              <details className="fs-sess__think" data-testid="think-block" open={status === 'running'}>
-                <summary>思考过程（agent_thought_chunk）</summary>
+              // T3 亲和归类：始终默认收起（不随运行态翻转 open——用户手动开合
+              // 不被覆盖），summary 给出段数与总字数；展开后 body 限高滚动
+              // （.fs-sess__think-body 已有 max-height 240 样式）
+              <details className="fs-sess__think" data-testid="think-block">
+                <summary>
+                  {`思考过程 · ${node.reasoning.length} 段 · 共 ${fmtLen(node.reasoning.join('').length)} 字`}
+                </summary>
                 <div className="fs-sess__think-body">{node.reasoning.join('')}</div>
               </details>
             )}

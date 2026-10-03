@@ -115,13 +115,13 @@ function MessageTab({ nodeId }: { nodeId: string }) {
   return (
     <div data-testid="drawer-message">
       {node.reasoning.length > 0 && (
+        // T3 亲和归类：多段合并为单个折叠块（默认收起），summary 带段数，
+        // body 以换行连接各段；沿用 fs-reasoning__block 样式类
         <div className="fs-reasoning">
-          {node.reasoning.map((r, i) => (
-            <details key={i} className="fs-reasoning__block">
-              <summary>思考 {i + 1}</summary>
-              <p>{r}</p>
-            </details>
-          ))}
+          <details className="fs-reasoning__block">
+            <summary>{`思考过程 · ${node.reasoning.length} 段`}</summary>
+            <p>{node.reasoning.join('\n')}</p>
+          </details>
         </div>
       )}
       <div
