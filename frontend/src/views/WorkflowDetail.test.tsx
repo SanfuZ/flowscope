@@ -118,13 +118,18 @@ describe('WorkflowDetail：工具栏', () => {
     renderAt('/workflows/new');
     const undo = (await screen.findByRole('button', { name: '撤销' })) as HTMLButtonElement;
     const redoBtn = screen.getByRole('button', { name: '重做' }) as HTMLButtonElement;
-    expect(undo.disabled).toBe(true);
+    // T1 收尾：agents 就绪后种子节点自动换 agent（updateNode 正常进历史）
+    // → 新建页初始即有一步可撤历史
+    await waitFor(() => expect(undo.disabled).toBe(false));
     expect(redoBtn.disabled).toBe(true);
 
     fireEvent.click(await screen.findByTestId('palette-add-corp')); // 一次画布编辑
     expect(undo.disabled).toBe(false);
-    fireEvent.click(undo);
-    expect(undo.disabled).toBe(true);
+    fireEvent.click(undo); // 撤销 addNode
+    expect(useEditorStore.getState().model!.nodes.length).toBe(1);
+    fireEvent.click(undo); // 撤销种子换选
+    expect(undo.disabled).toBe(true); // 回到空白快照：历史耗尽
+    expect(useEditorStore.getState().model!.nodes[0].agent).toBe('mock');
     expect(redoBtn.disabled).toBe(false);
   });
 
@@ -159,6 +164,46 @@ describe('WorkflowDetail：工具栏', () => {
     act(() => useEditorStore.getState().updateModelMeta({ name: 'fixed' }));
     expect(save.disabled).toBe(false);
     screen.getByText('✓ 通过');
+  });
+});
+
+describe('WorkflowDetail：新建种子自动换选（T1 收尾）', () => {
+  const AGENTS_WITH_ZCODE = [
+    { key: 'mock', name: 'Mock', permission_default: 'ask', healthy: true },
+    { key: 'zcode', name: 'ZCode', permission_default: 'ask', healthy: true },
+  ];
+
+  it('isNew：agents 就绪后未碰过的 step1 自动换成首个非演示 agent', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS_WITH_ZCODE);
+    renderAt('/workflows/new');
+    await waitFor(() =>
+      expect(useEditorStore.getState().model!.nodes[0].agent).toBe('zcode'),
+    );
+    const n = useEditorStore.getState().model!.nodes[0];
+    expect(n.id).toBe('step1'); // 仅换 agent，种子身份不变
+    expect(n.prompt).toBe('');
+    expect(useEditorStore.getState().dirty).toBe(true); // 走 updateNode 正常编辑纪律（可撤销）
+  });
+
+  it('isNew：用户已编辑（脏）→ 种子保持 mock 不被自动换', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS_WITH_ZCODE);
+    renderAt('/workflows/new');
+    // 同步置脏（先于 agents 查询 resolve 的微任务）：模拟用户抢先编辑
+    act(() => useEditorStore.getState().updateNode('step1', { prompt: 'my-prompt' }));
+    await act(async () => {}); // 冲刷 agents resolve 与后续 effects
+    expect(useEditorStore.getState().model!.nodes[0].agent).toBe('mock');
+    expect(useEditorStore.getState().model!.nodes[0].prompt).toBe('my-prompt');
+  });
+
+  it('isNew：注册的全是演示 agent → 种子保持 mock（纯演示环境新建仍可用）', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue([
+      { key: 'mock', name: 'Mock', permission_default: 'ask', healthy: true },
+      { key: 'bad-mock', name: 'Bad', permission_default: 'ask', healthy: true },
+    ]);
+    renderAt('/workflows/new');
+    await act(async () => {});
+    await act(async () => {}); // 再冲刷一轮，确认不会有延迟换选
+    expect(useEditorStore.getState().model!.nodes[0].agent).toBe('mock');
   });
 });
 

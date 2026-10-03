@@ -11,6 +11,8 @@
 //     一次性放行（明确离开意图，不伪装已保存）。
 // 文档事实源在 editorStore（Task 3~5）；本页只做装配：
 //   - 载入：new → loadBlank()；既有 → wfQuery.data.yaml → loadYaml。
+//     T1 收尾：new 页 agents 就绪后自动把未碰过的 mock 种子换成首个非演示
+//     agent（详见 effect 处注释——脏态跳过、纯演示环境跳过、可撤销）。
 //     用 lastDocRef 记录已处理的 {id, data}（比简报的 !loaded 守卫更强：同一份
 //     data 的 effect 重跑/StrictMode 双调用被引用相等拦下，且能处理 id 切换）。
 //     同 id 的 refetch 新数据（react-query 结构共享保证引用变⇔内容变）：脏 → 不
@@ -36,6 +38,7 @@ import { api } from '../api/client';
 import type { WorkflowDetail as WorkflowDetailRow } from '../api/types';
 import { validateWorkflow } from '../lib/validate';
 import { useEditorStore } from '../store/editorStore';
+import { DEMO_AGENT_KEYS } from '../components/Palette';
 import EditableCanvas from '../components/EditableCanvas';
 import PropertyPanel from '../components/PropertyPanel';
 
@@ -59,6 +62,14 @@ export default function WorkflowDetail() {
     queryKey: ['workflow', id],
     queryFn: () => api.getWorkflow(id),
     enabled: !isNew,
+  });
+
+  // 仅新建页需要 agent 清单（种子节点换选用；面板/画布各自的 ['agents'] 查询
+  // 照常自取）。enabled: isNew 避免既有工作流页的无谓请求。
+  const agentsQuery = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api.listAgents(),
+    enabled: isNew,
   });
 
   // --- 载入（new → loadBlank；既有 → loadYaml，含 refetch/切 id 策略） ---
@@ -89,6 +100,31 @@ export default function WorkflowDetail() {
       setStaleNotice(false);
     }
   }, [wfQuery.data, id, isNew, loadBlank, loadYaml]);
+
+  // --- T1 收尾：新建工作流种子节点自动选用首个非演示 agent ---
+  // loadBlank 的种子固定 agent 'mock'（演示 agent）；T1 起 demo agent 不进
+  // palette，新建页却仍摆着 mock 节点，违背「新建面向企业 agent」意图 →
+  // agents 就绪后把未被碰过的种子换成首个非演示 agent。守卫刻意收紧：
+  //   - !dirty：用户已编辑（含刚加的节点）就不动其文档；
+  //   - 单节点且 id=step1、agent=mock：换过/撤回过/改过即不再匹配，天然幂等
+  //     （swap 本身置脏，StrictMode/依赖重跑不会二次触发）；
+  //   - 无非演示 agent（纯 mock 环境的 home）保持种子原样——不把新建页弄成
+  //     无法运行。
+  // e2e 兼容（已 grep 核实）：冻结的 build-via-canvas.spec 对 step1 只断言
+  // data-id/handle 与 YAML 的 from/to，无任何 agent 名断言；e2e home 注册了
+  // zcode → step1 换成 zcode，两例均不依赖 step1 的 agent 身份（条件边的
+  // when 求值的是 source 输出，zcode 空跑不产 ok=true，node-1 照旧 skipped）。
+  // 走 updateNode 正常编辑纪律（进历史、置脏）：用户 Ctrl+Z 可撤回换选。
+  useEffect(() => {
+    if (!isNew || dirty || !loaded) return;
+    const m = useEditorStore.getState().model;
+    if (m == null || m.nodes.length !== 1) return;
+    const seed = m.nodes[0];
+    if (seed.id !== 'step1' || seed.agent !== 'mock') return;
+    const first = agentsQuery.data?.find((a) => !DEMO_AGENT_KEYS.has(a.key));
+    if (!first) return; // 纯演示环境：保持 mock 种子（新建页仍可用）
+    useEditorStore.getState().updateNode('step1', { agent: first.key });
+  }, [agentsQuery.data, dirty, isNew, loaded]);
 
   // --- 保存门 ---
   const problems = useMemo(

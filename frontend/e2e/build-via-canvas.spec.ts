@@ -103,6 +103,16 @@ async function newWorkflowWithConnectedNode(page: Page, moveAside = false) {
   await paletteAdd.click();
   // addNode 视觉级联：node-1 出现后才允许读 boundingBox（防布局未稳）
   await expect(page.locator('.react-flow__node[data-id="node-1"]')).toBeVisible();
+  // T1 收尾（种子自动换选）引入的必要步骤：agents 就绪后 WorkflowDetail 会把
+  // 未碰过的 mock 种子换成首个非演示 agent（e2e home → zcode），而 zcode 桥
+  // 拒收空 prompt（协议层 "empty prompt" 硬失败）——本 spec 的 step1 依赖
+  // mock 的确定性脚本（<1s、终态 {"ok": true} 驱动 test2 的条件边求值）。
+  // 经属性面板 Agent 下拉把 step1 换回 mock；该下拉有意不过滤演示 agent
+  // （T1 不对称：存量 mock 工作流仍可编辑），此处顺带 e2e 覆盖该语义。
+  // 与换选的竞态无关紧要：palette 点击已置脏 → 换选守卫（!dirty）要么已
+  // 触发（此处改回 mock）要么永不触发（种子仍是 mock），两序皆确定。
+  await page.locator('.react-flow__node[data-id="step1"]').click();
+  await page.getByLabel('Agent').selectOption('mock');
   if (moveAside) await dragNodeAside(page, 'node-1');
   await dragConnect(page, 'step1', 'node-1');
 }
