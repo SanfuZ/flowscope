@@ -72,6 +72,7 @@ pub fn router_with_static(state: AppState, dist: Option<PathBuf>) -> Router {
         .route("/runs/{id}/events", get(run_events))
         .route("/runs/{id}/artifacts/{node}/{name}", get(get_artifact))
         .route("/agents", get(list_agents))
+        .route("/fs/workflows", get(fs_workflows))
         .with_state(state);
     let mut app = Router::new().nest("/api", api);
     if let Some(dist) = dist {
@@ -99,6 +100,19 @@ pub async fn bootstrap(
 ) -> Result<(AppState, Router), ApiError> {
     std::fs::create_dir_all(home)
         .map_err(|e| ApiError::Msg(format!("创建 home 目录 {} 失败: {e}", home.display())))?;
+    // 文件夹工作流默认目录（home/workflows；生产 home=~/.flowscope 时与
+    // [`resolve_dir`] 的默认 <user>/.flowscope/workflows 一致）：存在即建，
+    // 仅**首启刚创建**时种子一个演示工作流（与 write_default_agents_toml 只
+    // 再生 scripts/agents.toml 的模式不同——YAML 是用户可编辑内容，覆盖会毁
+    // 改动；既有安装若目录缺失，下次启动会补种一次，可接受）。
+    let wf_dir = home.join("workflows");
+    let wf_dir_just_created = !wf_dir.exists();
+    std::fs::create_dir_all(&wf_dir)
+        .map_err(|e| ApiError::Msg(format!("创建工作流目录 {} 失败: {e}", wf_dir.display())))?;
+    if wf_dir_just_created {
+        std::fs::write(wf_dir.join("hello-zcode.yaml"), HELLO_ZCODE_YAML)
+            .map_err(|e| ApiError::Msg(format!("种子 hello-zcode.yaml 失败: {e}")))?;
+    }
     let store = Arc::new(
         Store::open(&home.join("flowscope.db"))
             .map_err(|e| ApiError::Msg(format!("打开 store 失败: {e}")))?,
@@ -283,6 +297,16 @@ steps:
 stop: end_turn
 crash_after: 1
 stderr_lines: ["mock agent starting"]
+"#;
+
+/// 首启种子的文件夹工作流（home/workflows/hello-zcode.yaml）：单节点 agent
+/// `zcode` 建文件演示，内容与已验证的冒烟一致。只在目录刚创建（首启）时写入。
+const HELLO_ZCODE_YAML: &str = r#"# FlowScope 首启种子工作流（文件夹工作流示例）
+meta: {name: hello-zcode, version: 1}
+nodes:
+  - id: hello
+    agent: zcode
+    prompt: 请在当前目录创建 hello_flowscope.txt，内容为 ok，然后简单说明你做了什么
 "#;
 
 // ---------------------------------------------------------------------------
@@ -474,6 +498,133 @@ async fn list_agents(State(st): State<AppState>) -> Response {
         })
         .collect();
     Json(agents).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// 文件夹工作流（git 团队流）：只读列出目录中的 *.yaml/*.yml
+// ---------------------------------------------------------------------------
+
+/// 文件夹工作流目录解析：显式 dir → env `FLOWSCOPE_WORKFLOW_DIR` →
+/// `<用户主目录>/.flowscope/workflows`。这里独立读 USERPROFILE/HOME（与
+/// [`user_home_dir`] 一致）；bootstrap 的 home 由调用方传入，生产同址。
+fn resolve_dir(explicit: Option<&str>) -> PathBuf {
+    if let Some(d) = explicit {
+        return PathBuf::from(d);
+    }
+    if let Ok(d) = std::env::var("FLOWSCOPE_WORKFLOW_DIR") {
+        return PathBuf::from(d);
+    }
+    user_home_dir().join(".flowscope").join("workflows")
+}
+
+/// 单个文件夹工作流条目（列出后再统一排序）。
+struct FsWfFile {
+    file: String,
+    name: String,
+    version: Option<u32>,
+    valid: bool,
+    error: Option<String>,
+    yaml: String,
+}
+
+/// GET /api/fs/workflows?dir=<可选>：列出目录下 .yaml/.yml 文件，逐个
+/// `parse_yaml` 提取 name/version（只 parse 不 validate），按名称字母序
+/// （name.to_lowercase，同名按文件名）返回；解析失败项 `valid:false` 带
+/// error（前端可照样打开进编辑器修）。
+/// 安全注记：本地单人工具，目录来自用户输入属预期行为；本 handler 只读
+/// （列目录 + 读文件），无任何写入端点。
+#[derive(Deserialize)]
+struct FsWorkflowsQuery {
+    dir: Option<String>,
+}
+
+async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
+    let dir = resolve_dir(q.dir.as_deref());
+    if !dir.is_dir() {
+        return err_json(
+            StatusCode::BAD_REQUEST,
+            format!("目录不存在: {}", dir.display()),
+        );
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) => return err_json(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+    let mut files: Vec<FsWfFile> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext_ok = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
+        if !ext_ok {
+            continue;
+        }
+        let file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(file.as_str())
+            .to_owned();
+        let entry = match std::fs::read_to_string(&path) {
+            Ok(text) => match workflow::parse_yaml(&text) {
+                Ok(def) => FsWfFile {
+                    file,
+                    name: def.name,
+                    version: Some(def.version),
+                    valid: true,
+                    error: None,
+                    yaml: text,
+                },
+                Err(e) => FsWfFile {
+                    file,
+                    name: stem,
+                    version: None,
+                    valid: false,
+                    error: Some(e.to_string()),
+                    yaml: text,
+                },
+            },
+            // 文件读不动（权限/编码）：不挡整个列表，按失败项呈现
+            Err(e) => FsWfFile {
+                file,
+                name: stem,
+                version: None,
+                valid: false,
+                error: Some(e.to_string()),
+                yaml: String::new(),
+            },
+        };
+        files.push(entry);
+    }
+    // 名称字母序（用户要求）；同名再按文件名稳定排序
+    files.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.file.cmp(&b.file))
+    });
+    let files: Vec<Value> = files
+        .into_iter()
+        .map(|f| {
+            json!({
+                "file": f.file,
+                "name": f.name,
+                "version": f.version,
+                "valid": f.valid,
+                "error": f.error,
+                "yaml": f.yaml,
+            })
+        })
+        .collect();
+    Json(json!({ "dir": dir.display().to_string(), "files": files })).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1095,6 +1246,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.as_array().unwrap().len(), 0);
 
+        // 文件夹工作流目录：首启刚创建 → 种子 hello-zcode.yaml（可 parse）
+        let seeded = home.join("workflows").join("hello-zcode.yaml");
+        assert!(seeded.exists(), "首启应种子 hello-zcode.yaml");
+        let wf = workflow::parse_yaml(&std::fs::read_to_string(&seeded).unwrap()).unwrap();
+        assert_eq!(wf.name, "hello-zcode");
+        assert_eq!(wf.version, 1);
+        assert_eq!(wf.nodes.len(), 1);
+        assert_eq!(wf.nodes[0].agent, "zcode");
+
         // 2) 给 mock bin（bootstrap 只写配置不执行，路径无需真实存在）
         let (_state, app) = bootstrap(
             &home,
@@ -1123,6 +1283,7 @@ mod tests {
         assert!(arr.iter().all(|a| a["healthy"] == true));
 
         // 3) 再次 bootstrap：加载已存在的 agents.toml，不重复生成
+        std::fs::write(&seeded, "meta: {name: custom, version: 9}\nnodes: []\n").unwrap();
         let (state, app) = bootstrap(&home, None, None).await.unwrap();
         let (_, body) = req_json(&app, get_req("/api/agents".into())).await;
         assert_eq!(
@@ -1131,6 +1292,11 @@ mod tests {
             "复用既有 agents.toml"
         );
         assert_eq!(state.registry.agents.len(), 2 + zcode_registered);
+        // 种子是一次性的：用户改过的工作流 YAML 不被 bootstrap 覆盖
+        assert_eq!(
+            std::fs::read_to_string(&seeded).unwrap(),
+            "meta: {name: custom, version: 9}\nnodes: []\n"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -1283,5 +1449,130 @@ mod tests {
         assert_eq!(body.as_array().unwrap().len(), 0);
 
         let _ = std::fs::remove_dir_all(&dist);
+    }
+
+    /// query 参数 percent-encode（测试内联小工具，避免为测试引入依赖）。
+    fn enc_url(s: &str) -> String {
+        let mut out = String::new();
+        for b in s.as_bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(*b as char)
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+
+    /// 文件夹工作流列表：只列 .yaml/.yml、按 meta.name 字母序（Alpha < beta，
+    /// 与文件名字典序相反才证明排的是 name）、非法 YAML 项 valid:false 带 error、
+    /// yaml 字段为文件全文。
+    #[tokio::test]
+    async fn fs_workflows_lists_sorted_and_reports_invalid() {
+        let dir =
+            std::env::temp_dir().join(format!("flowscope-fs-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let alpha_yaml =
+            "meta: {name: Alpha, version: 1}\nnodes:\n  - {id: n1, agent: m, prompt: p}\n";
+        let beta_yaml =
+            "meta: {name: beta, version: 2}\nnodes:\n  - {id: n1, agent: m, prompt: p}\n";
+        std::fs::write(dir.join("beta.yaml"), beta_yaml).unwrap();
+        std::fs::write(dir.join("a.yaml"), alpha_yaml).unwrap();
+        std::fs::write(dir.join("c.yml"), "---\n: : :\n").unwrap();
+        std::fs::write(dir.join("ignored.txt"), "不是工作流").unwrap();
+
+        let app = router(test_state());
+        let (status, body) = req_json(
+            &app,
+            get_req(format!(
+                "/api/fs/workflows?dir={}",
+                enc_url(dir.to_str().unwrap())
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["dir"].as_str().unwrap(), dir.display().to_string());
+        let files = body["files"].as_array().unwrap();
+        assert_eq!(files.len(), 3, ".txt 不列: {body}");
+        assert_eq!(files[0]["name"], "Alpha");
+        assert_eq!(files[0]["file"], "a.yaml");
+        assert_eq!(files[0]["version"], 1);
+        assert_eq!(files[0]["valid"], true);
+        assert_eq!(files[0]["error"], Value::Null);
+        assert_eq!(files[0]["yaml"].as_str().unwrap(), alpha_yaml);
+        assert_eq!(files[1]["name"], "beta");
+        assert_eq!(files[1]["file"], "beta.yaml");
+        assert_eq!(files[1]["version"], 2);
+        assert_eq!(files[1]["valid"], true);
+        // 非法 YAML：name 取文件名去扩展名，error 带解析消息，yaml 仍是全文
+        assert_eq!(files[2]["file"], "c.yml");
+        assert_eq!(files[2]["name"], "c");
+        assert_eq!(files[2]["version"], Value::Null);
+        assert_eq!(files[2]["valid"], false);
+        assert!(
+            !files[2]["error"].as_str().unwrap_or("").is_empty(),
+            "{body}"
+        );
+        assert_eq!(files[2]["yaml"].as_str().unwrap(), "---\n: : :\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 目录不存在 / 是文件非目录 → 400 {error:"目录不存在: …"}。
+    #[tokio::test]
+    async fn fs_workflows_missing_dir_or_file_path_is_400() {
+        let app = router(test_state());
+        let missing = std::env::temp_dir().join(format!(
+            "flowscope-fs-missing-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let (status, body) = req_json(
+            &app,
+            get_req(format!(
+                "/api/fs/workflows?dir={}",
+                enc_url(missing.to_str().unwrap())
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with("目录不存在: "),
+            "{body}"
+        );
+
+        // 是文件非目录：同样 400
+        let file = missing.with_extension("txt");
+        std::fs::write(&file, "plain").unwrap();
+        let (status, _) = req_json(
+            &app,
+            get_req(format!(
+                "/api/fs/workflows?dir={}",
+                enc_url(file.to_str().unwrap())
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    /// resolve_dir 优先级：显式 dir > env FLOWSCOPE_WORKFLOW_DIR > 默认
+    /// `<home>/.flowscope/workflows`。env 是进程全局态：本 crate 其余测试
+    /// 均不读该变量（fs handler 测试全走显式 dir），并行无竞态。
+    #[test]
+    fn resolve_dir_priority_explicit_env_default() {
+        // SAFETY: 测试进程内独占读写该 env；其余测试不读 FLOWSCOPE_WORKFLOW_DIR。
+        unsafe { std::env::set_var("FLOWSCOPE_WORKFLOW_DIR", "D:/env-dir") };
+        assert_eq!(
+            resolve_dir(Some("D:/explicit")),
+            PathBuf::from("D:/explicit")
+        );
+        assert_eq!(resolve_dir(None), PathBuf::from("D:/env-dir"));
+        // SAFETY: 同上。
+        unsafe { std::env::remove_var("FLOWSCOPE_WORKFLOW_DIR") };
+        assert_eq!(
+            resolve_dir(None),
+            user_home_dir().join(".flowscope").join("workflows")
+        );
     }
 }
