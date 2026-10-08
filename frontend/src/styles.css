@@ -1674,6 +1674,67 @@ select.fs-form-input {
   gap: 10px;
 }
 
+/* --- 保存到文件夹/另存/派生对话框（fs-folderdlg）：目录/文件名/标记字段
+       小模态（编辑器页与文件夹页共用皮肤；形态同 fs-confirm，字段纵列） --- */
+
+.fs-folderdlg {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 8, 14, 0.62);
+  animation: fs-toast-in 0.18s ease-out;
+}
+
+.fs-folderdlg__card {
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  padding: 20px 22px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+.fs-folderdlg__title {
+  margin: 0 0 14px;
+  font-size: 15.5px;
+  font-weight: 700;
+}
+
+.fs-folderdlg__text {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.fs-folderdlg__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+
+/* 复用 .fs-form-input 皮肤：块级上边距去掉（字段自带 gap），宽度撑满卡片 */
+.fs-folderdlg__field .fs-form-input {
+  margin-top: 0;
+  width: 100%;
+}
+
+.fs-folderdlg__error {
+  margin: 2px 0 10px;
+}
+
+.fs-folderdlg__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
 /* ============================================================
    M2c：节点会话视图（/runs/:runId/sess/:nodeId）
    视觉对照 zcode-acp-demo/workflow-demo.html 的 #viewSession：

@@ -9,9 +9,20 @@
 //     不用 window.confirm）。保存成功路径 markSaved() 先于 navigate 且 shouldBlock
 //     实时读 store.getState()，不会被拦截卡住；启动运行用 allowNextNavRef
 //     一次性放行（明确离开意图，不伪装已保存）。
-//   - 保存到文件夹（origin 入口）：FolderWorkflows「在编辑器打开」带 originDir/
-//     originFile → new 页工具栏在「保存」旁多「保存到文件夹」按钮（写回来源
-//     git 文件夹的同名文件，与「保存」进数据库并存；校验门一致，先 blur 冲刷）。
+//   - 保存到文件夹（通用化 + 另存派生）：任何工作流（new 或已入库）工具栏
+//     常驻两个同级 fs-btn——「保存到文件夹」：有 effectiveOrigin（文件夹页
+//     「在编辑器打开」经 location.state 带的 originDir/originFile，或对话框/
+//     另存保存过的本地 savedOrigin）→ 一键写回该文件；无 → 弹 fs-folderdlg
+//     对话框选目录+文件名。「另存到文件夹…」：总是弹对话框（Save As 一等
+//     公民，预填 effectiveOrigin ?? localStorage 目录 + model.name 合法化），
+//     可改目录/文件名并**派生标记**——对话框「标记」初值 = model.tags join，
+//     保存时若与画布 tags 不同则对 toYaml() 结果做 setYamlTags 文档手术
+//     （只改 meta.tags 行，画布 model 本身不动：文件派生、画布保持）。
+//     目录预填 localStorage fs-workflow-dir（文件夹页同键）→ 后端默认目录；
+//     文件名缺 .yaml/.yml 后缀自动补 .yaml。保存成功更新 savedOrigin（后续
+//     主按钮一键直达新路径）+ toast + 失效 ['folder-workflows'] + 关对话框；
+//     失败对话框保留就地显错。与「保存」进数据库并存；校验门/busy 共用，
+//     点击先 blur 冲刷。
 // 文档事实源在 editorStore（Task 3~5）；本页只做装配：
 //   - 载入：new → loadBlank()（或 location.state.importedYaml → loadYaml，
 //     文件夹工作流入口，见 effect 处注释）；既有 → wfQuery.data.yaml → loadYaml。
@@ -42,6 +53,7 @@ import { useBlocker, useLocation, useNavigate, useParams } from 'react-router-do
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { api } from '../api/client';
 import type { WorkflowDetail as WorkflowDetailRow } from '../api/types';
+import { setYamlTags } from '../api/workflowModel';
 import { validateWorkflow } from '../lib/validate';
 import { useEditorStore } from '../store/editorStore';
 import { DEMO_AGENT_KEYS } from '../components/Palette';
@@ -105,6 +117,12 @@ export default function WorkflowDetail() {
       ? locationState.originFile
       : undefined;
   const hasOrigin = originDir !== undefined && originFile !== undefined;
+  // origin 可写化（通用化）：location.state 只读且随路由消失（new 保存成功
+  // replace 后即丢），对话框/另存保存成功的路径记入本地 savedOrigin；
+  // effectiveOrigin = savedOrigin ?? location.state 的 origin，驱动主按钮
+  // 一键直存 vs 弹对话框的分流与「另存…」的显隐。
+  const [savedOrigin, setSavedOrigin] = useState<{ dir: string; file: string } | null>(null);
+  const effectiveOrigin = savedOrigin ?? (hasOrigin ? { dir: originDir!, file: originFile! } : null);
   useEffect(() => {
     if (isNew) {
       if (hasImport) {
@@ -204,27 +222,127 @@ export default function WorkflowDetail() {
     },
   });
 
-  // --- 保存到文件夹（origin 入口）：写回来源 git 文件夹的同名文件 ---
-  // toYaml 已含 tags（workflowModel 序列化 meta.tags）。校验门与「保存」一致
-  // （problems 非空禁用）；点击先 blur 冲刷属性面板的防抖提交（复用 Ctrl+S
-  // 的冲刷纪律）再取文档。成功 → toast「已保存到 <file> ✓」+ 失效文件夹
-  // 查询缓存；失败 → mutation.error 就地显示（fs-editor-msgs）。
+  // --- 保存到文件夹（通用化 + 另存派生）：一键写回 effectiveOrigin 或对话框
+  // 选定路径。直存 yaml = toYaml()（已含画布 tags）；对话框保存可派生标记——
+  // 「标记」输入与画布 model.tags 不同时对 toYaml() 做 setYamlTags 手术
+  //（model 本身不动：保存的是派生文件，画布保持原 tags）。校验门与「保存」
+  // 一致（problems 非空禁用）；点击先 blur 冲刷属性面板的防抖提交（复用
+  // Ctrl+S 的冲刷纪律）再取文档。成功 → 记 savedOrigin + toast「已保存到
+  // <file> ✓」+ 失效文件夹查询缓存 + 关对话框（若经对话框发起）；失败 →
+  // mutation.error 就地显示（对话框开着显在对话框内，直存显在 fs-editor-msgs）。
+  const [folderDlgOpen, setFolderDlgOpen] = useState(false);
+  const [folderDir, setFolderDir] = useState('');
+  const [folderFile, setFolderFile] = useState('');
+  // 对话框「标记」草稿（中英文逗号切分，与属性面板「标签」同一约定）
+  const [folderTags, setFolderTags] = useState('');
+  const [folderError, setFolderError] = useState('');
+  // onSuccess 里读对话框开闭（mutation 回调闭包的是渲染期值，ref 恒新）
+  const folderDlgOpenRef = useRef(false);
+  folderDlgOpenRef.current = folderDlgOpen;
+  // 后端默认目录只静默取一次（首次打开且无 localStorage 缓存时；失败留空不重试）
+  const folderDlgDirFetchedRef = useRef(false);
+
   const folderSaveMut = useMutation({
-    mutationFn: () => {
-      const yaml = useEditorStore.getState().toYaml();
-      return api.saveFolderWorkflow({ dir: originDir!, file: originFile!, yaml });
-    },
-    onSuccess: () => {
+    mutationFn: (target: { dir: string; file: string; yaml: string }) =>
+      api.saveFolderWorkflow(target),
+    onSuccess: (_res, target) => {
+      setSavedOrigin({ dir: target.dir, file: target.file }); // 后续主按钮一键直达（含另存改路径后的更新）
       qc.invalidateQueries({ queryKey: ['folder-workflows'] });
       window.clearTimeout(toastTimerRef.current);
-      setToast({ name: '', created: false, folderFile: originFile });
+      setToast({ name: '', created: false, folderFile: target.file });
       toastTimerRef.current = window.setTimeout(() => setToast(null), 2200);
+      if (folderDlgOpenRef.current) {
+        setFolderError('');
+        setFolderDlgOpen(false);
+      }
     },
   });
 
+  /** 一键直存（有 effectiveOrigin 时主按钮路径）：画布原文（含画布 tags）整写。 */
   const saveToFolder = () => {
+    if (!effectiveOrigin) return; // 按钮已分流，防御性兜底
     (document.activeElement as HTMLElement | null)?.blur(); // 冲刷防抖提交
-    if (!folderSaveMut.isPending) folderSaveMut.mutate();
+    if (folderSaveMut.isPending) return;
+    folderSaveMut.mutate({ ...effectiveOrigin, yaml: useEditorStore.getState().toYaml() });
+  };
+
+  /** 打开「保存到文件夹/另存」对话框。prefill（另存/有 origin 改路径）：目录/
+   *  文件名直接取之；否则目录预填 localStorage fs-workflow-dir（文件夹页同键）
+   *  → 无则静默 listFolderWorkflows() 取后端默认目录 res.dir（失败留空），文件
+   *  名取 model.name 合法化（trim，空则 workflow；不以 .yaml/.yml 结尾自动补
+   *  .yaml）。「标记」初值恒为画布 model.tags join(', ')（导入文件时即文件 tags）。
+   */
+  const openFolderDialog = (prefill?: { dir: string; file: string }) => {
+    folderSaveMut.reset(); // 清历史失败态：错误只属于本次对话框会话
+    setFolderError('');
+    setFolderTags(useEditorStore.getState().model?.tags?.join(', ') ?? '');
+    if (prefill) {
+      setFolderDir(prefill.dir);
+      setFolderFile(prefill.file);
+      setFolderDlgOpen(true);
+      return;
+    }
+    const rawName = (useEditorStore.getState().model?.name ?? '').trim() || 'workflow';
+    setFolderFile(/\.ya?ml$/i.test(rawName) ? rawName : `${rawName}.yaml`);
+    const cached = localStorage.getItem('fs-workflow-dir');
+    if (cached) {
+      setFolderDir(cached);
+      setFolderDlgOpen(true);
+      return;
+    }
+    setFolderDir('');
+    setFolderDlgOpen(true);
+    if (folderDlgDirFetchedRef.current) return; // 已取过：成功值已在 state
+    folderDlgDirFetchedRef.current = true;
+    api
+      .listFolderWorkflows() // 静默：失败留空（后端仍兜底目录校验）
+      .then((res) => setFolderDir((cur) => (cur === '' ? res.dir : cur)))
+      .catch(() => {});
+  };
+
+  const closeFolderDialog = () => {
+    folderSaveMut.reset();
+    setFolderError('');
+    setFolderDlgOpen(false);
+  };
+
+  /** 对话框保存：客户端预校验（目录非空、文件名非空且无 / \、缺 .yaml/.yml
+   *  后缀自动补 .yaml——后端仍兜底）→ blur 冲刷 → 组装 yaml（标记与画布
+   *  tags 不同则 setYamlTags 文档手术，model 不动）→ saveFolderWorkflow；
+   *  失败对话框保留并显示服务端错误。 */
+  const saveViaDialog = () => {
+    const dir = folderDir.trim();
+    let file = folderFile.trim();
+    if (dir === '') {
+      setFolderError('目录路径不能为空');
+      return;
+    }
+    if (file === '') {
+      setFolderError('文件名不能为空');
+      return;
+    }
+    if (file.includes('/') || file.includes('\\')) {
+      setFolderError('文件名不能包含 / 或 \\');
+      return;
+    }
+    if (!/\.ya?ml$/i.test(file)) file = `${file}.yaml`;
+    const dialogTags = folderTags
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter((t) => t !== '');
+    setFolderError('');
+    (document.activeElement as HTMLElement | null)?.blur(); // 冲刷防抖提交
+    // 手术抛错（toYaml 输出恒有 meta，理论不可达）→ 就地提示不发请求
+    try {
+      let yaml = useEditorStore.getState().toYaml();
+      const modelTags = useEditorStore.getState().model?.tags ?? [];
+      if (dialogTags.join('\u0000') !== modelTags.join('\u0000')) {
+        yaml = setYamlTags(yaml, dialogTags); // 只改 meta.tags：文件派生、画布不动
+      }
+      if (!folderSaveMut.isPending) folderSaveMut.mutate({ dir, file, yaml });
+    } catch (e) {
+      setFolderError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   // --- Ctrl/Cmd+S 快捷保存（save-ux）：window 捕获阶段接管浏览器「保存网页」；
@@ -380,18 +498,34 @@ export default function WorkflowDetail() {
           >
             {saveMut.isPending ? '保存中…' : '保存'}
           </button>
-          {/* 文件夹来源入口（origin）：写回来源文件（与「保存」进数据库并存）。
-              保存成功（new → /workflows/:id）后 origin state 随路由消失。 */}
-          {hasOrigin && isNew && (
-            <button
-              className="fs-btn"
-              disabled={problems.length > 0 || folderSaveMut.isPending}
-              title={problems.length > 0 ? problems[0] : `${originDir}\\${originFile}`}
-              onClick={saveToFolder}
-            >
-              {folderSaveMut.isPending ? '保存中…' : '保存到文件夹'}
-            </button>
-          )}
+          {/* 保存到文件夹（通用化）：常驻按钮。有 effectiveOrigin → 一键写回该
+              文件（title 示目标路径）；无 → 弹对话框选目录/文件名。与「保存」
+              （进数据库）并存；校验门/busy 共用。 */}
+          <button
+            className="fs-btn"
+            disabled={problems.length > 0 || folderSaveMut.isPending}
+            title={
+              problems.length > 0
+                ? problems[0]
+                : effectiveOrigin
+                  ? `${effectiveOrigin.dir}\\${effectiveOrigin.file}`
+                  : '选择目录与文件名，保存到 git 文件夹'
+            }
+            onClick={() => (effectiveOrigin ? saveToFolder() : openFolderDialog())}
+          >
+            {folderSaveMut.isPending ? '保存中…' : '保存到文件夹'}
+          </button>
+          {/* 另存到文件夹…（Save As 一等公民）：常驻按钮，总是弹对话框（预填
+              effectiveOrigin ?? localStorage 目录 + 文件名合法化），可改目录/
+              文件名并派生标记；成功后主按钮一键直达新路径。 */}
+          <button
+            className="fs-btn"
+            disabled={problems.length > 0 || folderSaveMut.isPending}
+            title="另存为新文件：可改目录、文件名与标记"
+            onClick={() => openFolderDialog(effectiveOrigin ?? undefined)}
+          >
+            另存到文件夹…
+          </button>
           <button
             className="fs-btn fs-btn--primary"
             disabled={isNew || launching || !loaded}
@@ -417,7 +551,7 @@ export default function WorkflowDetail() {
           </span>
         </div>
       )}
-      {folderSaveMut.isError && (
+      {folderSaveMut.isError && !folderDlgOpen && (
         <div className="fs-editor-msgs">
           <span className="fs-error-text">
             保存到文件夹失败：{String((folderSaveMut.error as Error)?.message ?? folderSaveMut.error)}
@@ -477,6 +611,66 @@ export default function WorkflowDetail() {
             </button>
           </div>
         </aside>
+      )}
+
+      {/* 保存到文件夹/另存对话框（fs-folderdlg）：目录/文件名/标记三字段，
+          预检与服务端错误就地显示（失败不关，可改可取消）。 */}
+      {folderDlgOpen && (
+        <div className="fs-folderdlg" role="dialog" aria-label="保存到文件夹">
+          <div className="fs-folderdlg__card">
+            <h3 className="fs-folderdlg__title">保存到文件夹</h3>
+            <div className="fs-folderdlg__field">
+              <label className="fs-form-label" htmlFor="fs-folderdlg-dir">
+                目录路径
+              </label>
+              <input
+                id="fs-folderdlg-dir"
+                className="fs-form-input"
+                value={folderDir}
+                placeholder="如 D:\team-repo\workflows（留空用默认目录）"
+                onChange={(e) => setFolderDir(e.target.value)}
+              />
+            </div>
+            <div className="fs-folderdlg__field">
+              <label className="fs-form-label" htmlFor="fs-folderdlg-file">
+                文件名
+              </label>
+              <input
+                id="fs-folderdlg-file"
+                className="fs-form-input"
+                value={folderFile}
+                placeholder="如 my-workflow.yaml（缺 .yaml/.yml 自动补全）"
+                onChange={(e) => setFolderFile(e.target.value)}
+              />
+            </div>
+            <div className="fs-folderdlg__field">
+              <label className="fs-form-label" htmlFor="fs-folderdlg-tags">
+                标记
+              </label>
+              <input
+                id="fs-folderdlg-tags"
+                className="fs-form-input"
+                value={folderTags}
+                placeholder="逗号分隔，首个用于文件夹页分组；留空=不写标记（仅影响本次保存的文件）"
+                onChange={(e) => setFolderTags(e.target.value)}
+              />
+            </div>
+            {(folderError || folderSaveMut.isError) && (
+              <div className="fs-error-text fs-folderdlg__error">
+                {folderError ||
+                  `保存失败：${String((folderSaveMut.error as Error)?.message ?? folderSaveMut.error)}`}
+              </div>
+            )}
+            <div className="fs-folderdlg__actions">
+              <button type="button" className="fs-btn" disabled={folderSaveMut.isPending} onClick={closeFolderDialog}>
+                取消
+              </button>
+              <button type="button" className="fs-btn fs-btn--primary" disabled={folderSaveMut.isPending} onClick={saveViaDialog}>
+                {folderSaveMut.isPending ? '保存中…' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 保存成功 toast（save-ux）：右下角 2.2s 自动消失 */}

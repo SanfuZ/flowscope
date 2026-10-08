@@ -6,7 +6,7 @@
 //（项目未引入 jest-dom，沿用既有测试约定）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactFlowProvider } from '@xyflow/react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -20,6 +20,7 @@ vi.mock('../api/client', () => ({
     getWorkflow: vi.fn(),
     saveWorkflow: vi.fn(),
     saveFolderWorkflow: vi.fn(),
+    listFolderWorkflows: vi.fn(),
     startRun: vi.fn(),
   },
 }));
@@ -101,6 +102,7 @@ afterEach(() => {
     future: [],
     parseErrors: [],
   });
+  localStorage.removeItem('fs-workflow-dir'); // 对话框目录缓存不跨用例
   vi.clearAllMocks();
 });
 
@@ -422,10 +424,10 @@ describe('WorkflowDetail：save-ux 快捷键与 toast', () => {
   });
 });
 
-describe('WorkflowDetail：保存到文件夹（origin 入口）', () => {
+describe('WorkflowDetail：保存到文件夹（通用化 + 另存派生）', () => {
   const ORIGIN_DIR = 'D:/team/wf';
   const ORIGIN_FILE = 'a.yaml';
-  // 含 tags（写回文件夹时随 YAML 保留）
+  // 含 tags（写回文件夹时随 YAML 保留；另存对话框「标记」初值来源）
   const ORIGIN_YAML = `meta:
   name: origin-wf
   version: 3
@@ -439,14 +441,152 @@ nodes:
 edges: []
 `;
 
-  it('无 origin state：不显示「保存到文件夹」按钮', async () => {
+  it('无 origin state：「保存到文件夹」「另存到文件夹…」常驻工具栏', async () => {
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
     renderAt('/workflows/new');
-    await screen.findByRole('button', { name: '保存' });
-    expect(screen.queryByRole('button', { name: '保存到文件夹' })).toBeNull();
+    const btn = (await screen.findByRole('button', { name: '保存到文件夹' })) as HTMLButtonElement;
+    expect(screen.getByRole('button', { name: '另存到文件夹…' })).toBeTruthy();
+    expect(btn.title).toBe('选择目录与文件名，保存到 git 文件夹'); // 无直达路径提示走对话框
   });
 
-  it('有 origin（new 页）：点击调用 saveFolderWorkflow（yaml 含 tags）→ toast 已保存到 <file> ✓', async () => {
+  it('无 origin 点击「保存到文件夹」弹对话框：文件名=模型名合法化补 .yaml，目录无缓存时静默取后端默认', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/default/wf', files: [] });
+    renderAt('/workflows/new');
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件夹' }));
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    expect((within(dlg).getByLabelText('文件名') as HTMLInputElement).value).toBe('my-workflow.yaml'); // loadBlank 名 + 补后缀
+    expect((within(dlg).getByLabelText('标记') as HTMLInputElement).value).toBe(''); // 无 tags
+    const dirInput = within(dlg).getByLabelText('目录路径') as HTMLInputElement;
+    await waitFor(() => expect(dirInput.value).toBe('D:/default/wf')); // 后端默认目录回填
+    expect(vi.mocked(api.listFolderWorkflows)).toHaveBeenCalledWith(); // 无参（后端默认目录）
+  });
+
+  it('localStorage 已有目录缓存：对话框直接预填缓存且不请求后端', async () => {
+    localStorage.setItem('fs-workflow-dir', 'D:/cached');
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    renderAt('/workflows/new');
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '另存到文件夹…' })); // 无 origin 也常驻可用
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    expect((within(dlg).getByLabelText('目录路径') as HTMLInputElement).value).toBe('D:/cached');
+    expect(vi.mocked(api.listFolderWorkflows)).not.toHaveBeenCalled();
+  });
+
+  it('对话框另存（改标记）：yaml 收到派生 tags、画布 tags 不变；成功后主按钮直存新路径（不再弹对话框）', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({
+      dir: 'D:/team/wf',
+      file: 'derived.yaml',
+      bytes: 99,
+    });
+    renderAt('/workflows/new', { importedYaml: ORIGIN_YAML }); // 无 origin → 走对话框
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '另存到文件夹…' }));
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    expect((within(dlg).getByLabelText('标记') as HTMLInputElement).value).toBe('演示'); // 初值=画布 tags join
+    fireEvent.change(within(dlg).getByLabelText('目录路径'), { target: { value: 'D:/team/wf' } });
+    fireEvent.change(within(dlg).getByLabelText('文件名'), { target: { value: 'derived.yaml' } });
+    fireEvent.change(within(dlg).getByLabelText('标记'), { target: { value: ' 新组， extra ,,' } });
+    fireEvent.click(within(dlg).getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.dir).toBe('D:/team/wf');
+    expect(arg.file).toBe('derived.yaml');
+    // yaml 为文档手术结果：切分 trim 去空后的新 tags 在、旧值不在
+    expect(arg.yaml).toContain('- 新组');
+    expect(arg.yaml).toContain('- extra');
+    expect(arg.yaml).not.toContain('演示');
+    // 画布 model 不动（文件派生、画布保持原 tags）
+    expect(useEditorStore.getState().model!.tags).toEqual(['演示']);
+
+    // 成功：对话框关闭 + toast + savedOrigin 生效 → 主按钮一键直达新路径
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '保存到文件夹' })).toBeNull());
+    const toast = await screen.findByTestId('save-toast');
+    expect(toast.textContent).toContain('已保存到 derived.yaml');
+    expect(toast.textContent).toContain('✓');
+    const main = screen.getByRole('button', { name: '保存到文件夹' }) as HTMLButtonElement;
+    expect(main.title).toBe('D:/team/wf\\derived.yaml');
+
+    vi.mocked(api.saveFolderWorkflow).mockClear();
+    fireEvent.click(main);
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    const arg2 = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg2.dir).toBe('D:/team/wf');
+    expect(arg2.file).toBe('derived.yaml');
+    expect(arg2.yaml).toContain('- 演示'); // 直存回画布原文（画布 tags 未被派生改写）
+    expect(screen.queryByRole('dialog')).toBeNull(); // 未再弹对话框
+  });
+
+  it('文件名缺 .yaml/.yml 后缀：保存时自动补 .yaml', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: 'D:/x', file: 'plain.yaml', bytes: 9 });
+    renderAt('/workflows/new');
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件夹' }));
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    fireEvent.change(within(dlg).getByLabelText('目录路径'), { target: { value: 'D:/x' } });
+    fireEvent.change(within(dlg).getByLabelText('文件名'), { target: { value: 'plain' } });
+    fireEvent.click(within(dlg).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveFolderWorkflow).mock.calls[0][0].file).toBe('plain.yaml');
+  });
+
+  it('文件名含 /：预检拦截不发请求，错误就地显示且对话框保留', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    localStorage.setItem('fs-workflow-dir', 'D:/cached');
+    renderAt('/workflows/new');
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件夹' }));
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    fireEvent.change(within(dlg).getByLabelText('文件名'), { target: { value: 'a/b.yaml' } });
+    fireEvent.click(within(dlg).getByRole('button', { name: '保存' }));
+    expect(vi.mocked(api.saveFolderWorkflow)).not.toHaveBeenCalled();
+    within(dlg).getByText('文件名不能包含 / 或 \\');
+    expect(screen.getByRole('dialog', { name: '保存到文件夹' })).toBeTruthy(); // 不关闭
+  });
+
+  it('服务端失败：对话框保留并就地显示错误', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.saveFolderWorkflow).mockRejectedValueOnce(new Error('目录不存在'));
+    localStorage.setItem('fs-workflow-dir', 'D:/cached');
+    renderAt('/workflows/new');
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件夹' }));
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    fireEvent.change(within(dlg).getByLabelText('文件名'), { target: { value: 'x.yaml' } });
+    fireEvent.click(within(dlg).getByRole('button', { name: '保存' }));
+    const err = await within(dlg).findByText(/保存失败：目录不存在/);
+    expect(err.className).toContain('fs-error-text');
+    expect(screen.getByRole('dialog', { name: '保存到文件夹' })).toBeTruthy(); // 可改可取消
+  });
+
+  it('有 origin：点「另存到文件夹…」对话框预填 origin 目录/文件名与画布 tags', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    renderAt('/workflows/new', {
+      importedYaml: ORIGIN_YAML,
+      originDir: ORIGIN_DIR,
+      originFile: ORIGIN_FILE,
+    });
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '另存到文件夹…' }));
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    expect((within(dlg).getByLabelText('目录路径') as HTMLInputElement).value).toBe(ORIGIN_DIR);
+    expect((within(dlg).getByLabelText('文件名') as HTMLInputElement).value).toBe(ORIGIN_FILE);
+    expect((within(dlg).getByLabelText('标记') as HTMLInputElement).value).toBe('演示');
+    expect(vi.mocked(api.listFolderWorkflows)).not.toHaveBeenCalled(); // 有 prefill 不取后端
+  });
+
+  it('有 origin（new 页）：主按钮一键直存（yaml 含 tags）→ toast 已保存到 <file> ✓', async () => {
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
     vi.mocked(api.saveFolderWorkflow).mockResolvedValue({
       dir: ORIGIN_DIR,
@@ -494,7 +634,7 @@ edges: []
     expect(btn.title).toContain('meta.name');
     expect(vi.mocked(api.saveFolderWorkflow)).not.toHaveBeenCalled();
 
-    // 修复后可点；请求失败 → 就地错误文本
+    // 修复后可点；请求失败 → 就地错误文本（对话框未开，显在 fs-editor-msgs）
     act(() => useEditorStore.getState().updateModelMeta({ name: 'fixed' }));
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
