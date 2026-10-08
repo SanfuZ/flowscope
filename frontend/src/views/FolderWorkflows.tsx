@@ -13,6 +13,11 @@
 // 只开一个），保存=只改 meta.tags 的文档手术（setYamlTags，保留注释/排版）→
 // saveFolderWorkflow 写回 → 重走刷新的 load 路径即时重分组；失败在面板内提示。
 // 解析失败文件（valid:false）标记按钮禁用（先去编辑器修复）。
+// 行内「派生」（快速另存）：每行「派生」按钮（valid:false 禁用同标记）打开
+// fs-folderdlg 小对话框——文件名预填 <stem>-copy.<原扩展名>、标记预填源
+// tags、目录预填当前 resolvedDir；保存=对**源文件 yaml 原文**做 setYamlTags
+// 手术（标记有变时；注释/排版保留）→ saveFolderWorkflow 写新文件（源文件不动）
+// → 关对话框 + 重载列表（新文件即时出现，可能进新分组）；失败在对话框内提示。
 // 目录记忆在 localStorage `fs-workflow-dir`：挂载时有缓存目录直接读之，
 // 没有则无参调用一次取后端默认目录（env FLOWSCOPE_WORKFLOW_DIR →
 // ~/.flowscope/workflows）并回填输入框；读取成功后把实际目录写回缓存。
@@ -92,6 +97,14 @@ export default function FolderWorkflows() {
   const [tagDraft, setTagDraft] = useState('');
   const [tagError, setTagError] = useState('');
   const [tagSaving, setTagSaving] = useState(false);
+  // 派生（快速另存）：当前派生源（null=对话框关）；目录/文件名/标记草稿随
+  // fs-folderdlg 对话框展示（与编辑器「另存到文件夹」同一皮肤）
+  const [deriveFrom, setDeriveFrom] = useState<FolderWorkflow | null>(null);
+  const [deriveDir, setDeriveDir] = useState('');
+  const [deriveFile, setDeriveFile] = useState('');
+  const [deriveTags, setDeriveTags] = useState('');
+  const [deriveError, setDeriveError] = useState('');
+  const [deriveSaving, setDeriveSaving] = useState(false);
 
   const load = async (d: string) => {
     const target = d.trim();
@@ -162,6 +175,67 @@ export default function FolderWorkflows() {
       setTagError(e instanceof Error ? e.message : String(e));
     } finally {
       setTagSaving(false);
+    }
+  };
+
+  /** 打开派生对话框：文件名 = 源 stem + `-copy`（保留源的 .yaml/.yml 扩展名），
+   *  标记 = 源 tags join，目录 = 当前 resolvedDir；与行内标记面板互斥。 */
+  const openDerive = (f: FolderWorkflow) => {
+    setTagEditFile(null); // 与行内标记面板互斥（单例弹出层）
+    const stem = f.file.replace(/\.ya?ml$/i, '');
+    const ext = /\.yml$/i.test(f.file) ? '.yml' : '.yaml';
+    setDeriveFrom(f);
+    setDeriveDir(resolvedDir);
+    setDeriveFile(`${stem}-copy${ext}`);
+    setDeriveTags(f.tags.join(', '));
+    setDeriveError('');
+  };
+
+  /** 派生保存：预校验（目录非空、文件名非空且无 / \、缺 .yaml/.yml 补 .yaml）
+   *  → 标记与源 tags 不同时对**源文件 yaml 原文**做 setYamlTags 手术（注释/
+   *  排版保留；源文件本身不动）→ saveFolderWorkflow 写新文件 → 关对话框 +
+   *  重走「刷新」的 load 路径（新文件即时出现，可能进新分组）；失败对话框内
+   *  提示、不关。 */
+  const saveDerive = async () => {
+    if (!deriveFrom) return;
+    const dir = deriveDir.trim();
+    let file = deriveFile.trim();
+    if (dir === '') {
+      setDeriveError('目录路径不能为空');
+      return;
+    }
+    if (file === '') {
+      setDeriveError('文件名不能为空');
+      return;
+    }
+    if (file.includes('/') || file.includes('\\')) {
+      setDeriveError('文件名不能包含 / 或 \\');
+      return;
+    }
+    if (!/\.ya?ml$/i.test(file)) file = `${file}.yaml`;
+    const tags = deriveTags
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter((t) => t !== '');
+    let yaml = deriveFrom.yaml; // 无标记变化：源原文整写
+    if (tags.join('\u0000') !== deriveFrom.tags.join('\u0000')) {
+      try {
+        yaml = setYamlTags(deriveFrom.yaml, tags); // 手术在源原文上：注释保留
+      } catch (e) {
+        setDeriveError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+    }
+    setDeriveSaving(true);
+    setDeriveError('');
+    try {
+      await api.saveFolderWorkflow({ dir, file, yaml });
+      setDeriveFrom(null);
+      await load(resolvedDir || dir); // 与「刷新」同路径：新文件即时出现（可能进新组）
+    } catch (e) {
+      setDeriveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeriveSaving(false);
     }
   };
 
@@ -279,6 +353,16 @@ export default function FolderWorkflows() {
                             >
                               标记
                             </button>
+                            {/* 派生（快速另存）：解析失败文件禁用（源 YAML 动不了） */}
+                            <button
+                              className="fs-btn fs-btn--compact"
+                              data-testid={`derive-${f.file}`}
+                              disabled={!f.valid}
+                              title={f.valid ? '从此工作流另存为新文件' : '文件无法解析，请先在编辑器中修复'}
+                              onClick={() => openDerive(f)}
+                            >
+                              派生
+                            </button>
                           </td>
                         </tr>
                         {/* 标记面板：插在目标行正下方的全宽行（单例），保存/取消就地反馈 */}
@@ -329,6 +413,69 @@ export default function FolderWorkflows() {
           </tbody>
         </table>
       ) : null}
+
+      {/* 派生对话框（fs-folderdlg，与编辑器「另存到文件夹」同一皮肤）：
+          目录/文件名/标记三字段，预检与服务端错误就地显示（失败不关）。 */}
+      {deriveFrom && (
+        <div className="fs-folderdlg" role="dialog" aria-label="派生工作流">
+          <div className="fs-folderdlg__card">
+            <h3 className="fs-folderdlg__title">派生工作流</h3>
+            <p className="fs-folderdlg__text">
+              从 <b>{deriveFrom.file}</b> 另存为新文件（源文件不变，可改标记分组）
+            </p>
+            <div className="fs-folderdlg__field">
+              <label className="fs-form-label" htmlFor="fs-derive-dir">
+                目录路径
+              </label>
+              <input
+                id="fs-derive-dir"
+                className="fs-form-input"
+                value={deriveDir}
+                placeholder="如 D:\team-repo\workflows"
+                onChange={(e) => setDeriveDir(e.target.value)}
+              />
+            </div>
+            <div className="fs-folderdlg__field">
+              <label className="fs-form-label" htmlFor="fs-derive-file">
+                文件名
+              </label>
+              <input
+                id="fs-derive-file"
+                className="fs-form-input"
+                value={deriveFile}
+                placeholder="如 my-workflow-copy.yaml（缺 .yaml/.yml 自动补全）"
+                onChange={(e) => setDeriveFile(e.target.value)}
+              />
+            </div>
+            <div className="fs-folderdlg__field">
+              <label className="fs-form-label" htmlFor="fs-derive-tags">
+                标记
+              </label>
+              <input
+                id="fs-derive-tags"
+                className="fs-form-input"
+                value={deriveTags}
+                placeholder="逗号分隔，首个用于文件夹页分组；留空=不写标记"
+                onChange={(e) => setDeriveTags(e.target.value)}
+              />
+            </div>
+            {deriveError && <div className="fs-error-text fs-folderdlg__error">{deriveError}</div>}
+            <div className="fs-folderdlg__actions">
+              <button type="button" className="fs-btn" disabled={deriveSaving} onClick={() => setDeriveFrom(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="fs-btn fs-btn--primary"
+                disabled={deriveSaving}
+                onClick={() => void saveDerive()}
+              >
+                {deriveSaving ? '保存中…' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -6,7 +6,7 @@
 // 行内标记编辑：setYamlTags 走真实模块（不经 mock）——保存断言 yaml 实为
 // 文档手术结果（新 tags 在、原注释在）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
@@ -317,5 +317,124 @@ describe('FolderWorkflows：行内标记编辑', () => {
     expect(bad.getAttribute('title')).toBe('文件无法解析，请先在编辑器中修复');
     // 合法行不受影响
     expect((screen.getByTestId('tag-edit-t.yaml') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+/** 派生 fixture：带注释（手术保留性断言）+ 一个 tag + .yml 源（扩展名保留断言）。 */
+const YAML_DERIVE =
+  '# 团队注释：派生须保留\nmeta:\n  name: Derived\n  version: 1\n  tags:\n    - 旧组\nparams: {}\nnodes:\n  - id: n1\n    agent: m\n    prompt: p\n';
+
+const DERIVE_FILES = [
+  { file: 'd.yml', name: 'Derived', version: 1, valid: true, error: null, yaml: YAML_DERIVE, tags: ['旧组'] },
+  {
+    file: 'c.yaml',
+    name: 'c',
+    version: null,
+    valid: false,
+    error: 'yaml: 解析失败示例',
+    yaml: YAML_BAD,
+    tags: [] as string[],
+  },
+];
+
+describe('FolderWorkflows：行内派生（快速另存）', () => {
+  it('合法行「派生」可用；解析失败行禁用并带修复提示 title', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: DERIVE_FILES });
+    renderFolder();
+    await screen.findByText('Derived');
+
+    const bad = screen.getByTestId('derive-c.yaml') as HTMLButtonElement;
+    expect(bad.disabled).toBe(true);
+    expect(bad.getAttribute('title')).toBe('文件无法解析，请先在编辑器中修复');
+    const good = screen.getByTestId('derive-d.yml') as HTMLButtonElement;
+    expect(good.disabled).toBe(false);
+    expect(good.getAttribute('title')).toBe('从此工作流另存为新文件');
+  });
+
+  it('点「派生」打开对话框：目录=resolvedDir、文件名=stem-copy 保留源扩展名、标记=源 tags join', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: DERIVE_FILES });
+    renderFolder();
+    await screen.findByText('Derived');
+
+    expect(screen.queryByRole('dialog', { name: '派生工作流' })).toBeNull();
+    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    const dlg = screen.getByRole('dialog', { name: '派生工作流' });
+    expect((within(dlg).getByLabelText('目录路径') as HTMLInputElement).value).toBe('D:/team/wf');
+    expect((within(dlg).getByLabelText('文件名') as HTMLInputElement).value).toBe('d-copy.yml'); // .yml 扩展名保留
+    expect((within(dlg).getByLabelText('标记') as HTMLInputElement).value).toBe('旧组');
+    expect(within(dlg).getByText('d.yml')).toBeTruthy(); // 源文件名明示
+  });
+
+  it('保存：saveFolderWorkflow 收到手术源 yaml（新 tags 在、源注释在）→ 重载列表并关对话框', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: DERIVE_FILES });
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: 'D:/team/wf', file: 'd-copy.yml', bytes: 99 });
+    renderFolder();
+    await screen.findByText('Derived');
+    vi.mocked(api.listFolderWorkflows).mockClear();
+
+    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    const dlg = screen.getByRole('dialog', { name: '派生工作流' });
+    fireEvent.change(within(dlg).getByLabelText('标记'), { target: { value: ' 新组， extra ,,' } });
+    fireEvent.click(within(dlg).getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(api.saveFolderWorkflow).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.dir).toBe('D:/team/wf');
+    expect(arg.file).toBe('d-copy.yml'); // 新文件；源 d.yml 不动
+    // yaml 为**源文件原文**的手术结果：新 tags 在、旧值不在、源注释保留
+    expect(arg.yaml).toContain('- 新组');
+    expect(arg.yaml).toContain('- extra');
+    expect(arg.yaml).not.toContain('旧组');
+    expect(arg.yaml).toContain('# 团队注释：派生须保留');
+
+    // 保存后重走刷新的 load 路径（新文件即时出现，可能进新分组）+ 对话框关闭
+    await waitFor(() =>
+      expect(vi.mocked(api.listFolderWorkflows)).toHaveBeenCalledWith('D:/team/wf'),
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '派生工作流' })).toBeNull());
+  });
+
+  it('标记未变：整写源原文（含源注释），一样成功并重载', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: DERIVE_FILES });
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: 'D:/team/wf', file: 'd-copy.yml', bytes: 99 });
+    renderFolder();
+    await screen.findByText('Derived');
+    vi.mocked(api.listFolderWorkflows).mockClear();
+
+    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.click(screen.getByRole('button', { name: '保存' })); // 标记不动直接保存
+
+    await waitFor(() => expect(api.saveFolderWorkflow).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.yaml).toBe(YAML_DERIVE); // 源原文整写（含 tags 与注释）
+    await waitFor(() =>
+      expect(vi.mocked(api.listFolderWorkflows)).toHaveBeenCalledWith('D:/team/wf'),
+    );
+  });
+
+  it('取消：不调 saveFolderWorkflow，对话框关闭', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: DERIVE_FILES });
+    renderFolder();
+    await screen.findByText('Derived');
+
+    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.change(screen.getByLabelText('文件名'), { target: { value: 'other.yaml' } });
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(api.saveFolderWorkflow).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: '派生工作流' })).toBeNull();
+  });
+
+  it('服务端失败：对话框内显示后端 error，不关（可改可取消）', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: DERIVE_FILES });
+    vi.mocked(api.saveFolderWorkflow).mockRejectedValueOnce(new Error('文件已存在且只读'));
+    renderFolder();
+    await screen.findByText('Derived');
+
+    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    const dlg = screen.getByRole('dialog', { name: '派生工作流' });
+    const err = await within(dlg).findByText('文件已存在且只读');
+    expect(err.className).toContain('fs-error-text');
+    expect(within(dlg).getByLabelText('文件名')).toBeTruthy(); // 对话框仍开
   });
 });

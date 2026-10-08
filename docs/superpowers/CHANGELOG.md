@@ -2,6 +2,12 @@
 
 按时间序记录各次交付；细节见对应计划/报告与 `specs/2026-10-02-flowscope-current-state.md`（现状权威文档）。
 
+## 2026-10-08 · 保存到文件夹通用化：另存派生 + 文件夹页派生（`feat(frontend): 保存到文件夹通用化——另存到文件夹（目录/文件名/标记派生）` + `feat(frontend): 文件夹页派生——从既有工作流快速另存新文件（含文档同步）`）
+- 编辑器：「**保存到文件夹**」常驻任何工作流工具栏（此前仅文件夹 origin 入口显示）——有 effectiveOrigin（location.state origin 或本地 savedOrigin）一键写回；无则弹 `fs-folderdlg` 对话框（目录预填 localStorage `fs-workflow-dir` → 后端默认目录，文件名=model.name 合法化补 `.yaml`，缺后缀保存时自动补）。旁新增同级「**另存到文件夹…**」（一等 Save As，常驻、总弹对话框，预填 effectiveOrigin ?? 同上默认）。
+- 对话框「**标记**」字段（初值=画布 tags join）：与画布 tags 不同时对 `toYaml()` 结果做 `setYamlTags` 文档手术再保存——**文件派生 tags、画布 model 不动**；成功更新 savedOrigin（主按钮后续一键直达新路径）+ toast + 失效 `['folder-workflows']`，失败对话框保留就地显错；预检（目录/文件名非空、无 `/` `\`）不发请求。
+- 文件夹页：每行「**派生**」按钮（`data-testid="derive-<file>"`，valid:false 禁用同「标记」）打开 `fs-folderdlg` 对话框——文件名预填 `<stem>-copy` 保留源 `.yaml`/`.yml` 扩展名、标记预填源 tags、目录=resolvedDir；保存=对**源文件 yaml 原文**做手术（标记有变时，注释保留）→ `saveFolderWorkflow` 写新文件（源文件不动）→ 重载列表即时出现（可能进新分组）。
+- 测试：vitest 154（+12：编辑器对话框预填/派生标记/直存切换/后缀/预检、文件夹页派生全链路）/ e2e 4/4（specs 未动）。
+
 ## 2026-10-08 · 文件夹页行内标记编辑——tags 就地增删、保留注释回写（`feat(frontend): 文件夹页行内标记编辑——tags 就地增删、保留注释回写（含文档同步）`）
 
 ## 2026-10-02 · 文件夹页增强：分类标记 / 保存路径 / 刷新（e8d916c + `feat(frontend): 文件夹页分类标记与分组收起、编辑器保存回文件夹、刷新（含文档同步）`）
