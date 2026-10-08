@@ -3,6 +3,8 @@
 // originDir/originFile，断言带 state 导航——同 WorkflowDetail 测试的 data
 // router 手法）。localStorage 记忆目录与收起分组（fs-folder-collapsed），
 // afterEach 清理；项目未引入 jest-dom，沿用既有测试约定（.disabled/textContent）。
+// 行内标记编辑：setYamlTags 走真实模块（不经 mock）——保存断言 yaml 实为
+// 文档手术结果（新 tags 在、原注释在）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom';
@@ -13,6 +15,7 @@ import FolderWorkflows from './FolderWorkflows';
 vi.mock('../api/client', () => ({
   api: {
     listFolderWorkflows: vi.fn(),
+    saveFolderWorkflow: vi.fn(),
   },
 }));
 
@@ -214,5 +217,105 @@ describe('FolderWorkflows：分组与收起（meta.tags）', () => {
     await waitFor(() => expect(groupChevron('演示 (2)')).toBe('▶')); // 装载该目录的收起集合
     expect(screen.queryByText('Zeta')).toBeNull();
     expect(screen.queryByText('NoTag')).not.toBeNull(); // 未分类组不受影响
+  });
+});
+
+/** 标记编辑 fixture：带注释（手术保留性断言）+ 已有两个 tags（初值 join 断言）。 */
+const YAML_TAGGED =
+  '# 团队注释：手术须保留\nmeta:\n  name: Tagged\n  version: 1\n  tags:\n    - 旧组\n    - second\nparams: {}\nnodes:\n  - id: n1\n    agent: m\n    prompt: p\n';
+
+const TAGGED_FILES = [
+  { file: 't.yaml', name: 'Tagged', version: 1, valid: true, error: null, yaml: YAML_TAGGED, tags: ['旧组', 'second'] },
+  {
+    file: 'c.yml',
+    name: 'c',
+    version: null,
+    valid: false,
+    error: 'yaml: 解析失败示例',
+    yaml: YAML_BAD,
+    tags: [] as string[],
+  },
+];
+
+describe('FolderWorkflows：行内标记编辑', () => {
+  it('点「标记」在该行正下方展开面板，初值=tags.join(", ")', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: TAGGED_FILES });
+    renderFolder();
+    await screen.findByText('Tagged');
+
+    expect(screen.queryByLabelText('标记')).toBeNull(); // 面板未开
+    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    const input = screen.getByLabelText('标记') as HTMLInputElement;
+    expect(input.value).toBe('旧组, second'); // join(', ') 铺初值
+
+    // 面板行插在 Tagged 数据行正下方（colspan 全宽 fs-tagpop 行）
+    const rows = screen.getAllByRole('row');
+    const idx = rows.findIndex((r) => r.textContent?.includes('Tagged'));
+    expect(rows[idx + 1].className).toContain('fs-tagpop-row');
+  });
+
+  it('保存：saveFolderWorkflow 收到手术 yaml（新 tags 在、原注释在）后重载列表并关面板', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: TAGGED_FILES });
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: 'D:/team/wf', file: 't.yaml', bytes: 99 });
+    renderFolder();
+    await screen.findByText('Tagged');
+    vi.mocked(api.listFolderWorkflows).mockClear();
+
+    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    fireEvent.change(screen.getByLabelText('标记'), { target: { value: ' 新组， extra ,,' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(api.saveFolderWorkflow).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.dir).toBe('D:/team/wf');
+    expect(arg.file).toBe('t.yaml');
+    // yaml 为文档手术结果：切分 trim 去空后的新 tags 在、旧值不在、注释保留
+    expect(arg.yaml).toContain('- 新组');
+    expect(arg.yaml).toContain('- extra');
+    expect(arg.yaml).not.toContain('旧组');
+    expect(arg.yaml).toContain('# 团队注释：手术须保留');
+
+    // 保存后重走刷新的 load 路径（同目录再列一次）+ 面板关闭
+    await waitFor(() =>
+      expect(vi.mocked(api.listFolderWorkflows)).toHaveBeenCalledWith('D:/team/wf'),
+    );
+    await waitFor(() => expect(screen.queryByLabelText('标记')).toBeNull());
+  });
+
+  it('取消：不调 saveFolderWorkflow，面板关闭', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: TAGGED_FILES });
+    renderFolder();
+    await screen.findByText('Tagged');
+
+    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    fireEvent.change(screen.getByLabelText('标记'), { target: { value: '别的' } });
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(api.saveFolderWorkflow).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('标记')).toBeNull();
+  });
+
+  it('服务端失败：面板内显示后端 error，面板不关', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: TAGGED_FILES });
+    vi.mocked(api.saveFolderWorkflow).mockRejectedValueOnce(new Error('文件名不合法'));
+    renderFolder();
+    await screen.findByText('Tagged');
+
+    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    const err = await screen.findByText('文件名不合法');
+    expect(err.className).toContain('fs-error-text');
+    expect(screen.getByLabelText('标记')).toBeTruthy(); // 面板仍开，可改可取消
+  });
+
+  it('解析失败行：「标记」按钮禁用并带修复提示 title', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: TAGGED_FILES });
+    renderFolder();
+    await screen.findByText('Tagged');
+
+    const bad = screen.getByTestId('tag-edit-c.yml') as HTMLButtonElement;
+    expect(bad.disabled).toBe(true);
+    expect(bad.getAttribute('title')).toBe('文件无法解析，请先在编辑器中修复');
+    // 合法行不受影响
+    expect((screen.getByTestId('tag-edit-t.yaml') as HTMLButtonElement).disabled).toBe(false);
   });
 });

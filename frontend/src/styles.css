@@ -2030,3 +2030,40 @@ select.fs-form-input {
 .fs-folder-name {
   vertical-align: middle;
 }
+
+/* --- 文件夹页：行内标记编辑（fs-tagpop 面板） --- */
+
+/* 紧凑按钮：行内次级操作（标记 / 面板内取消保存）用，弱于主按钮 */
+.fs-btn--compact {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* 面板行：插在目标工作流行正下方，全宽单元格承载横向小面板 */
+.fs-table tr.fs-tagpop-row td {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-tagpop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+/* 复用 .fs-form-input 基础皮肤，行内布局下改固定宽并去掉块级上边距 */
+.fs-tagpop .fs-form-input {
+  width: 340px;
+  margin-top: 0;
+  flex: none;
+}
+
+.fs-tagpop__label {
+  white-space: nowrap;
+}
+
+.fs-tagpop .fs-error-text {
+  font-size: 12px;
+  white-space: nowrap;
+}

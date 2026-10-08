@@ -9,6 +9,10 @@
 // 可把画布内容（含 tags）写回来源文件（POST /api/fs/workflows/save），与「保存」
 // （进 FlowScope 数据库）并存，用户自选。「刷新」重读当前目录（保存到文件夹后
 // 可刷出最新内容）。
+// 行内「标记」编辑：行操作列的标记按钮在该行下方展开 fs-tagpop 面板（同一时间
+// 只开一个），保存=只改 meta.tags 的文档手术（setYamlTags，保留注释/排版）→
+// saveFolderWorkflow 写回 → 重走刷新的 load 路径即时重分组；失败在面板内提示。
+// 解析失败文件（valid:false）标记按钮禁用（先去编辑器修复）。
 // 目录记忆在 localStorage `fs-workflow-dir`：挂载时有缓存目录直接读之，
 // 没有则无参调用一次取后端默认目录（env FLOWSCOPE_WORKFLOW_DIR →
 // ~/.flowscope/workflows）并回填输入框；读取成功后把实际目录写回缓存。
@@ -16,6 +20,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import type { FolderWorkflow } from '../api/client';
+import { setYamlTags } from '../api/workflowModel';
 
 const DIR_KEY = 'fs-workflow-dir';
 const COLLAPSED_KEY = 'fs-folder-collapsed';
@@ -82,6 +87,11 @@ export default function FolderWorkflows() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>([]);
+  // 行内标记编辑：当前打开面板的文件名（null=无）；草稿/错误/保存中随行面板展示
+  const [tagEditFile, setTagEditFile] = useState<string | null>(null);
+  const [tagDraft, setTagDraft] = useState('');
+  const [tagError, setTagError] = useState('');
+  const [tagSaving, setTagSaving] = useState(false);
 
   const load = async (d: string) => {
     const target = d.trim();
@@ -118,6 +128,41 @@ export default function FolderWorkflows() {
     const next = collapsed.includes(g) ? collapsed.filter((x) => x !== g) : [...collapsed, g];
     setCollapsed(next);
     if (resolvedDir) writeCollapsed(resolvedDir, next);
+  };
+
+  /** 打开行内标记面板：每次打开都按当前 tags 重新铺初值；单例（开新关旧）。 */
+  const openTagEdit = (f: FolderWorkflow) => {
+    setTagEditFile(f.file);
+    setTagDraft(f.tags.join(', '));
+    setTagError('');
+  };
+
+  /** 保存标记：中英文逗号切分（与编辑器「标签」同一约定）→ meta.tags 文档手术
+   *  （保留注释/排版，手术抛错就地提示且不发请求）→ 写回来源文件 → 关面板 +
+   *  重走「刷新」的 load 路径即时重分组；服务端失败在面板内提示、不关面板。 */
+  const saveTags = async (f: FolderWorkflow) => {
+    const tags = tagDraft
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter((t) => t !== '');
+    let yaml: string;
+    try {
+      yaml = setYamlTags(f.yaml, tags);
+    } catch (e) {
+      setTagError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    setTagSaving(true);
+    setTagError('');
+    try {
+      await api.saveFolderWorkflow({ dir: resolvedDir, file: f.file, yaml });
+      setTagEditFile(null);
+      await load(resolvedDir || dir); // 与「刷新」同一路径：保存后即时重分组
+    } catch (e) {
+      setTagError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTagSaving(false);
+    }
   };
 
   return (
@@ -188,43 +233,95 @@ export default function FolderWorkflows() {
                   </tr>
                   {!isCollapsed &&
                     g.items.map((f) => (
-                      <tr key={f.file}>
-                        <td>
-                          <span className="fs-folder-name">{f.name}</span>
-                          {f.tags.map((t) => (
-                            <span key={t} className="fs-tag-pill">
-                              {t}
-                            </span>
-                          ))}
-                        </td>
-                        <td>{f.version == null ? '—' : `v${f.version}`}</td>
-                        <td>{f.file}</td>
-                        <td>
-                          {f.valid ? (
-                            <span className="fs-badge fs-badge--succeeded">✓ 可用</span>
-                          ) : (
-                            <span className="fs-badge fs-badge--cancelled" title={f.error ?? ''}>
-                              解析失败
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <button
-                            className="fs-btn"
-                            onClick={() =>
-                              navigate('/workflows/new', {
-                                state: {
-                                  importedYaml: f.yaml,
-                                  originDir: resolvedDir,
-                                  originFile: f.file,
-                                },
-                              })
-                            }
-                          >
-                            在编辑器打开
-                          </button>
-                        </td>
-                      </tr>
+                      <Fragment key={f.file}>
+                        <tr>
+                          <td>
+                            <span className="fs-folder-name">{f.name}</span>
+                            {f.tags.map((t) => (
+                              <span key={t} className="fs-tag-pill">
+                                {t}
+                              </span>
+                            ))}
+                          </td>
+                          <td>{f.version == null ? '—' : `v${f.version}`}</td>
+                          <td>{f.file}</td>
+                          <td>
+                            {f.valid ? (
+                              <span className="fs-badge fs-badge--succeeded">✓ 可用</span>
+                            ) : (
+                              <span className="fs-badge fs-badge--cancelled" title={f.error ?? ''}>
+                                解析失败
+                              </span>
+                            )}
+                          </td>
+                          <td>
+                            <button
+                              className="fs-btn"
+                              onClick={() =>
+                                navigate('/workflows/new', {
+                                  state: {
+                                    importedYaml: f.yaml,
+                                    originDir: resolvedDir,
+                                    originFile: f.file,
+                                  },
+                                })
+                              }
+                            >
+                              在编辑器打开
+                            </button>
+                            {/* 行内标记编辑：解析失败文件禁用（YAML 动不了） */}
+                            <button
+                              className="fs-btn fs-btn--ghost fs-btn--compact"
+                              data-testid={`tag-edit-${f.file}`}
+                              disabled={!f.valid}
+                              title={f.valid ? undefined : '文件无法解析，请先在编辑器中修复'}
+                              onClick={() => openTagEdit(f)}
+                            >
+                              标记
+                            </button>
+                          </td>
+                        </tr>
+                        {/* 标记面板：插在目标行正下方的全宽行（单例），保存/取消就地反馈 */}
+                        {tagEditFile === f.file && (
+                          <tr className="fs-tagpop-row">
+                            <td colSpan={5}>
+                              <div className="fs-tagpop">
+                                <label
+                                  className="fs-form-label fs-tagpop__label"
+                                  htmlFor={`fs-tag-input-${f.file}`}
+                                >
+                                  标记
+                                </label>
+                                <input
+                                  id={`fs-tag-input-${f.file}`}
+                                  className="fs-form-input fs-tagpop__input"
+                                  placeholder="逗号分隔，首个用于文件夹页分组；清空=删除标记"
+                                  value={tagDraft}
+                                  onChange={(e) => setTagDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !tagSaving) void saveTags(f);
+                                  }}
+                                />
+                                <button
+                                  className="fs-btn fs-btn--compact"
+                                  disabled={tagSaving}
+                                  onClick={() => setTagEditFile(null)}
+                                >
+                                  取消
+                                </button>
+                                <button
+                                  className="fs-btn fs-btn--primary fs-btn--compact"
+                                  disabled={tagSaving}
+                                  onClick={() => void saveTags(f)}
+                                >
+                                  保存
+                                </button>
+                                {tagError && <span className="fs-error-text">{tagError}</span>}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     ))}
                 </Fragment>
               );

@@ -6,7 +6,7 @@
 //   - retry/timeout_ms/output_schema 透传不深校验——后端 serde 权威；
 //   - nodes 可缺省/为空（空工作流合法加载），与后端“nodes 必填”不同，
 //     这是有意的宽松：加载兜底优先，保存时由 validateWorkflow 把守。
-import { parseDocument, stringify } from 'yaml';
+import { isMap, parseDocument, stringify } from 'yaml';
 
 export interface RetryModel {
   max: number;
@@ -207,6 +207,27 @@ export function serializeWorkflowYaml(model: WorkflowModel): string {
     },
     { indent: 2, lineWidth: 0 },
   );
+}
+
+/** 就地改写 meta.tags（**文档手术**，区别于 serializeWorkflowYaml 的全量重排）：
+ *  parseDocument 后只动 meta.tags 一个键——注释/缩进/其余行原样保留，供文件夹页
+ *  「标记」编辑后回写 git 文件（团队 diff 只见 tags 行变化）。
+ *  - tags 非空 → meta.set('tags', seq)（已有键原位换值、新键追加到 meta 尾部）；
+ *  - tags 为空 → meta.delete('tags')（等同未设）；
+ *  - 无 meta 段或非映射（含 yaml 语法错误导致树不完整）→ throw Error（调用方就地提示）。 */
+export function setYamlTags(yaml: string, tags: string[]): string {
+  const doc = parseDocument(yaml);
+  if (doc.errors.length > 0) {
+    throw new Error(`YAML 语法错误: ${doc.errors[0].message}`);
+  }
+  const meta = doc.get('meta');
+  if (!isMap(meta)) throw new Error('缺少 meta 段');
+  if (tags.length === 0) {
+    meta.delete('tags');
+  } else {
+    meta.set('tags', doc.createNode(tags)); // 字符串数组 → 标量 seq（引用由 yaml 包按需加）
+  }
+  return String(doc);
 }
 
 const KNOWN_TOP_KEYS = new Set(['meta', 'params', 'on_node_failure', 'nodes', 'edges']);

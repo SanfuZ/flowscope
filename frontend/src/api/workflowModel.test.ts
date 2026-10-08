@@ -1,10 +1,12 @@
-// workflowModel tags（meta.tags）解析/序列化往返测试：
+// workflowModel tags（meta.tags）解析/序列化/就地改写测试：
 //   - parse：字符串数组收为 model.tags；非数组/元素非字符串 → error
 //     「meta.tags 必须是字符串数组」；缺省/空数组 → 不携带（undefined）；
 //   - serialize：meta 键序 name/version/tags，有值输出、空数组省略；
-//   - roundtrip：parse → serialize → parse 内容不丢。
+//   - roundtrip：parse → serialize → parse 内容不丢；
+//   - setYamlTags（文档手术）：三态（新增/原位换值/空数组删键）+ 保留注释
+//     与块式排版 + 无 meta 段抛错——文件夹页「标记」编辑的回写核心。
 import { describe, expect, it } from 'vitest';
-import { parseWorkflowModel, serializeWorkflowYaml } from './workflowModel';
+import { parseWorkflowModel, serializeWorkflowYaml, setYamlTags } from './workflowModel';
 
 const BASE_MODEL = {
   name: 'demo',
@@ -63,5 +65,62 @@ describe('workflowModel：meta.tags', () => {
     expect(second.model?.tags).toEqual(['演示', 'alpha']);
     expect(second.model?.name).toBe('demo');
     expect(second.model?.version).toBe(2);
+  });
+});
+
+/** 手术fixture：顶部注释 + meta 注释 + 块式节点/参数行内注释，供保留性断言。 */
+const DOC_WITH_TAGS = `# 顶部注释：团队工作流
+meta:
+  name: demo
+  version: 2
+  tags:
+    - 旧标记
+params:
+  city: 杭州 # 参数注释
+nodes:
+  - id: n1
+    agent: m
+    prompt: p
+edges: []
+`;
+
+const DOC_NO_TAGS = DOC_WITH_TAGS.replace('  tags:\n    - 旧标记\n', '');
+
+describe('workflowModel：setYamlTags（meta.tags 文档手术）', () => {
+  it('新增：无 tags 文档写入 tags 数组，注释与块式排版原样保留', () => {
+    const out = setYamlTags(DOC_NO_TAGS, ['alpha', '演示']);
+    // 手术只动 meta.tags：注释与原排版仍在
+    expect(out).toContain('# 顶部注释：团队工作流');
+    expect(out).toContain('city: 杭州 # 参数注释');
+    expect(out).toContain('nodes:\n  - id: n1');
+    // 新 tags 可被严格 parse 读回
+    const { model, errors } = parseWorkflowModel(out);
+    expect(errors).toEqual([]);
+    expect(model?.tags).toEqual(['alpha', '演示']);
+  });
+
+  it('原位更新：已有 tags 换成新值集合，其余内容不动', () => {
+    const out = setYamlTags(DOC_WITH_TAGS, ['新A', '新B', '新C']);
+    expect(out).toContain('# 顶部注释：团队工作流'); // 注释保留
+    expect(out).not.toContain('旧标记'); // 旧值整体替换
+    const { model, errors } = parseWorkflowModel(out);
+    expect(errors).toEqual([]);
+    expect(model?.tags).toEqual(['新A', '新B', '新C']);
+    expect(model?.name).toBe('demo'); // 其余字段不受影响
+  });
+
+  it('空数组：删除 tags 键（等同未设）', () => {
+    const out = setYamlTags(DOC_WITH_TAGS, []);
+    expect(out).not.toContain('tags:');
+    expect(out).toContain('# 顶部注释：团队工作流');
+    const { model, errors } = parseWorkflowModel(out);
+    expect(errors).toEqual([]);
+    expect(model?.tags).toBeUndefined();
+  });
+
+  it('无 meta 段 / meta 非映射 / 语法错误 → throw（调用方就地提示）', () => {
+    expect(() => setYamlTags('nodes: []\n', ['a'])).toThrow('缺少 meta 段');
+    expect(() => setYamlTags('meta: 5\nnodes: []\n', ['a'])).toThrow('缺少 meta 段');
+    expect(() => setYamlTags('---\n: : :\n', ['a'])).toThrow();
   });
 });

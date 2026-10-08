@@ -2,7 +2,7 @@
 
 - 日期：2026-10-02 ｜ 对应 main：`18142f0` ｜ 远端：https://github.com/SanfuZ/flowscope（私有）
 - 定位：**后续整体修改的单一权威参考**。历史设计（M1 spec）与各里程碑计划保留在原处作记录；本文档描述系统**当前实际行为**。改动落地后请同步更新本文档。
-- 测试基线：cargo **57**（55 lib + 2 e2e）· vitest **132** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
+- 测试基线：cargo **57**（55 lib + 2 e2e）· vitest **141** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
 
 ## 1. 功能总览
 
@@ -65,7 +65,7 @@ StopReason 5 值映射（acp→NodeFailure）：end_turn→Ok；cancelled→Proc
 | `/` | 运行列表 | 3s 自动刷新；耗时列；空态引导 |
 | `/workflows` | 工作流列表 | 卡片；「新建工作流」→ /workflows/new |
 | `/workflows/:id`（含 new） | **画布编辑器（主交互）** | Palette（隐藏演示 agent mock/bad-mock；整行可点+落场动画）+ 可编辑 DAG（拖入/拉线/删除/拖移）+ PropertyPanel 三态（节点属性/条件边三件套+raw/工作流设置含新节点默认与**标签输入**）+ 撤销重做（快照 50 步，Ctrl+Z/Y，输入框内跳过）+ 校验徽章 + 保存（校验门禁+Ctrl+S+toast+未保存离开拦截 useBlocker）+ **保存到文件夹**（origin 入口：文件夹进来的 new 页在「保存」旁多此按钮，含 tags 写回来源文件）+ YAML 源码滑层（双向，导入失败自动展开原文+错误） |
-| `/folder` | 工作流文件夹 | 目录输入+读取+**刷新**（重读当前目录）；localStorage 记忆；**按首个 `meta.tags` 分组**（组名集合字母序、未分类恒最后、组内名称字母序），组行展开/收起（localStorage `fs-folder-collapsed` 按目录记忆），行 tag 小徽标；一键进编辑器（importedYaml + **originDir/originFile** 经 location.state；解析失败自动开 YAML 层） |
+| `/folder` | 工作流文件夹 | 目录输入+读取+**刷新**（重读当前目录）；localStorage 记忆；**按首个 `meta.tags` 分组**（组名集合字母序、未分类恒最后、组内名称字母序），组行展开/收起（localStorage `fs-folder-collapsed` 按目录记忆），行 tag 小徽标；**行内标记编辑**（行「标记」按钮→行下 `fs-tagpop` 面板，保存=`setYamlTags` 文档手术只改 `meta.tags`（注释/排版保留）+ `saveFolderWorkflow` 写回 + 重载即时重分组；valid:false 行禁用）；一键进编辑器（importedYaml + **originDir/originFile** 经 location.state；解析失败自动开 YAML 层） |
 | `/runs/:id` | 运行监控 | DAG 状态着色+消息预览行（running 尾 48 字/succeeded ✅）；顶栏 run-status；双击节点→会话视图 |
 | `/runs/:runId/sess/:nodeId` | 节点会话视图 | workflow-demo.html 形式：用户气泡(prompt 来自 node.started)/思考折叠块(默认收起，「N 段·共 X 字」摘要)/工具卡/stop chip/协议事件抽屉（onEvent 旁路收集）；SSE after=0 回放+实时统一 |
 
