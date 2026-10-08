@@ -19,8 +19,9 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path as AxPath, Query, State, rejection::JsonRejection};
+use axum::extract::{Path as AxPath, Query, Request, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response, sse};
 use axum::routing::{get, post};
 use futures::{Stream, StreamExt, stream};
@@ -51,6 +52,10 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub hub: Arc<EventHub>,
     pub registry: Arc<AgentRegistry>,
+    /// 访问令牌（`Some` 时所有请求须 `Authorization: Bearer <t>` 或
+    /// `?token=<t>`，否则 401；`None` 完全透传——桌面/dev 模式零影响）。
+    /// 服务器 bin（`bin/server.rs`）缺省自动生成随机 hex 并打印。
+    pub token: Option<Arc<str>>,
 }
 
 /// `/api` 路由树（无静态托管）。
@@ -58,9 +63,15 @@ pub fn router(state: AppState) -> Router {
     router_with_static(state, None)
 }
 
-/// `/api` 路由树 + 可选前端静态托管：`dist` 为 `Some` 时在 `/` 挂
-/// `ServeDir`，未命中文件回退 `index.html`（SPA history 路由）。
-/// `/api` 显式路由优先于静态服务。
+/// `/api` 路由树 + 可选前端静态托管：
+/// - `dist` 为 `Some` 时在 `/` 挂 `ServeDir`，未命中文件回退 `index.html`
+///   （SPA history 路由）——dev 磁盘热更新模式；
+/// - `dist` 为 `None` 时用**编译期嵌入**的前端资源（[`crate::assets`]）兜底：
+///   `/` 与无扩展名路径回退 `index.html`，其余按嵌入键精确匹配（未命中 404）
+///   ——单文件分发模式（server bin / 桌面壳）。
+///
+/// `/api` 显式路由优先于静态服务。`state.token` 为 `Some` 时套访问令牌
+/// 中间件（豁免 NOTHING：静态资源与 `/api` 一视同仁）。
 pub fn router_with_static(state: AppState, dist: Option<PathBuf>) -> Router {
     let api = Router::new()
         .route("/workflows", get(list_workflows).post(create_workflow))
@@ -74,7 +85,7 @@ pub fn router_with_static(state: AppState, dist: Option<PathBuf>) -> Router {
         .route("/agents", get(list_agents))
         .route("/fs/workflows", get(fs_workflows))
         .route("/fs/workflows/save", post(fs_workflows_save))
-        .with_state(state);
+        .with_state(state.clone());
     let mut app = Router::new().nest("/api", api);
     if let Some(dist) = dist {
         // axum 0.8 不允许 nest_service("/")，用 fallback_service 承接全部未命中
@@ -85,19 +96,88 @@ pub fn router_with_static(state: AppState, dist: Option<PathBuf>) -> Router {
             tower_http::services::ServeFile::new(dist.join("index.html")),
         );
         app = app.fallback_service(spa);
+    } else {
+        // 嵌入资源兜底（单文件分发）：`/`、SPA 路由 → index.html；带扩展名
+        // 的资源路径按嵌入键精确匹配，未命中 404（见 assets 模块）。
+        app = app.fallback(embedded_static);
+    }
+    if state.token.is_some() {
+        // layer 在全部路由与 fallback 注册之后挂载 → 覆盖一切请求
+        app = app.layer(from_fn_with_state(state.clone(), auth_middleware));
     }
     app
+}
+
+/// 嵌入资源兜底 handler（见 [`crate::assets::serve_embedded`]）。
+async fn embedded_static(uri: axum::http::Uri) -> Response {
+    let path = uri.path();
+    match crate::assets::serve_embedded(path) {
+        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+        // 未命中：末段带扩展名 → 按静态资源 404；否则 SPA history 路由回退
+        None if last_segment(path).contains('.') => {
+            err_json(StatusCode::NOT_FOUND, format!("静态资源不存在: {path}"))
+        }
+        None => match crate::assets::serve_embedded("/") {
+            Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
+            None => err_json(StatusCode::NOT_FOUND, "index.html 不存在"),
+        },
+    }
+}
+
+/// 路径末段（判断「像不像静态资源」用：带 `.` 即视为资源请求）。
+fn last_segment(path: &str) -> &str {
+    path.trim_end_matches('/').rsplit('/').next().unwrap_or("")
+}
+
+/// 访问令牌中间件：`Authorization: Bearer <t>` **或** `?token=<t>`（SSE
+/// EventSource 无法带自定义头，走 query）二者其一匹配即放行，否则
+/// 401 `{"error":"unauthorized"}`。豁免 NOTHING。
+async fn auth_middleware(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let expected = st.token.as_deref().unwrap_or_default();
+    let provided = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| query_token(req.uri().query()));
+    let authorized = provided.is_some_and(|t| t == expected);
+    if !authorized {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// 从 query 串取 `token=` 值（原样比较，不做 percent 解码——生成的令牌为
+/// hex 字符集，天然 URL 安全；自定义令牌请避免保留字符）。
+fn query_token(query: Option<&str>) -> Option<String> {
+    query?
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("token="))
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
 }
 
 /// 组装整个后端：建 home 目录、开 SQLite（home/flowscope.db）、EventHub、
 /// AgentRegistry（读 home/agents.toml；缺失且给了 mock agent 时写默认配置
 /// 并加载）、Engine（AcpExecutor）+ 标记遗留 running run 为 interrupted。
 ///
-/// T15（Tauri main）与 `bin/dev.rs` 共用本入口；返回的 Router 已含静态托管。
+/// `token` 为 `Some` 时全站要求凭据（见 [`AppState::token`]）；dist 语义见
+/// [`router_with_static`]。
+///
+/// T15（Tauri main）、`bin/dev.rs` 与 `bin/server.rs` 共用本入口；返回的
+/// Router 已含静态托管。
 pub async fn bootstrap(
     home: &Path,
     mock_agent_bin: Option<PathBuf>,
     dist: Option<PathBuf>,
+    token: Option<Arc<str>>,
 ) -> Result<(AppState, Router), ApiError> {
     std::fs::create_dir_all(home)
         .map_err(|e| ApiError::Msg(format!("创建 home 目录 {} 失败: {e}", home.display())))?;
@@ -150,6 +230,7 @@ pub async fn bootstrap(
         store,
         hub,
         registry,
+        token,
     };
     let router = router_with_static(state.clone(), dist);
     Ok((state, router))
@@ -823,7 +904,15 @@ mod tests {
             store,
             hub,
             registry: Arc::new(AgentRegistry::default()),
+            token: None,
         }
+    }
+
+    /// 带访问令牌的状态（token 中间件矩阵测试用）。
+    fn tokened_state(token: &str) -> AppState {
+        let mut st = test_state();
+        st.token = Some(Arc::from(token));
+        st
     }
 
     async fn body_string(res: Response) -> String {
@@ -1299,7 +1388,7 @@ mod tests {
         let zcode_registered = usize::from(zcode_spec_from_env().is_some());
 
         // 1) 无 mock bin：空 registry，路由可用
-        let (state, app) = bootstrap(&home, None, None).await.unwrap();
+        let (state, app) = bootstrap(&home, None, None, None).await.unwrap();
         assert!(state.store.list_workflows().unwrap().is_empty());
         assert!(home.join("flowscope.db").exists());
         let (status, body) = req_json(&app, get_req("/api/agents".into())).await;
@@ -1319,6 +1408,7 @@ mod tests {
         let (_state, app) = bootstrap(
             &home,
             Some(PathBuf::from("C:/nowhere/mock-agent.exe")),
+            None,
             None,
         )
         .await
@@ -1344,7 +1434,7 @@ mod tests {
 
         // 3) 再次 bootstrap：加载已存在的 agents.toml，不重复生成
         std::fs::write(&seeded, "meta: {name: custom, version: 9}\nnodes: []\n").unwrap();
-        let (state, app) = bootstrap(&home, None, None).await.unwrap();
+        let (state, app) = bootstrap(&home, None, None, None).await.unwrap();
         let (_, body) = req_json(&app, get_req("/api/agents".into())).await;
         assert_eq!(
             body.as_array().unwrap().len(),
@@ -1799,5 +1889,137 @@ mod tests {
             resolve_dir(None),
             user_home_dir().join(".flowscope").join("workflows")
         );
+    }
+
+    /// 嵌入资源兜底（dist=None）：`/` 回 index.html（含 FlowScope）、真实
+    /// `.js` 键精确可达、带扩展名未命中 404、`..` 拒绝、SPA 无扩展名路径回
+    /// index.html、`/api` 优先不受影响。
+    #[tokio::test]
+    async fn embedded_assets_serve_index_exact_keys_and_reject_traversal() {
+        let app = router_with_static(test_state(), None);
+
+        // `/` → index.html（text/html，含 FlowScope）
+        let res = app.clone().oneshot(get_req("/".into())).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(
+            res.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.starts_with("text/html"))
+        );
+        assert!(body_string(res).await.contains("FlowScope"));
+
+        // 真实嵌入键（动态挑一个 .js，不写死哈希文件名）→ 200 text/javascript
+        let js_key = crate::assets::embedded_keys()
+            .into_iter()
+            .find(|k| k.ends_with(".js"))
+            .expect("dist 构建产物应含 .js 资源");
+        let res = app
+            .clone()
+            .oneshot(get_req(format!("/{js_key}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "key: {js_key}");
+        assert!(
+            res.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.starts_with("text/javascript")),
+            "key: {js_key}"
+        );
+
+        // 带扩展名但键不存在 → 404（不回退 index.html）
+        let res = app
+            .clone()
+            .oneshot(get_req("/assets/no-such-file-xyz.js".into()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        // 路径穿越 → 404（拒绝含 .. 的请求路径）
+        for evil in ["/../Cargo.toml", "/assets/../../Cargo.toml"] {
+            let res = app.clone().oneshot(get_req(evil.to_owned())).await.unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "evil: {evil}");
+        }
+
+        // SPA history 路由（无扩展名）→ 回 index.html
+        let res = app
+            .clone()
+            .oneshot(get_req("/runs/whatever/sess/node-1".into()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(body_string(res).await.contains("FlowScope"));
+
+        // /api 显式路由仍优先
+        let (status, body) = req_json(&app, get_req("/api/agents".into())).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    /// 令牌中间件矩阵：无 token 完全透传（回归）；设 token 后——无凭据 401
+    /// （豁免 NOTHING，静态资源同拦）、错误 token 401、空 token 参数 401、
+    /// `?token=` 放行（SSE EventSource 路径）、`Authorization: Bearer` 放行。
+    #[tokio::test]
+    async fn token_middleware_matrix() {
+        // (0) 无 token：完全透传
+        let app = router(test_state());
+        let (status, _) = req_json(&app, get_req("/api/agents".into())).await;
+        assert_eq!(status, StatusCode::OK, "无 token 态必须全透传");
+
+        let app = router_with_static(tokened_state("sekret123"), None);
+
+        // (1) 无凭据 → 401 {"error":"unauthorized"}；静态资源同拦（豁免 NOTHING）
+        let (status, body) = req_json(&app, get_req("/api/agents".into())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "unauthorized");
+        let res = app.clone().oneshot(get_req("/".into())).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "静态资源不豁免");
+
+        // (2) 错误 token → 401
+        let (status, body) = req_json(&app, get_req("/api/agents?token=wrong".into())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+        // (3) 空 token 参数视同未提供 → 401
+        let (status, _) = req_json(&app, get_req("/api/agents?token=".into())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // (4) ?token= 正确 → 200（SSE EventSource 场景）
+        let (status, body) = req_json(&app, get_req("/api/agents?token=sekret123".into())).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // (5) Bearer 头正确 → 200（静态资源同样放行）
+        let (status, body) = req_json(
+            &app,
+            Request::get("/api/agents")
+                .header("authorization", "Bearer sekret123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let res = app
+            .clone()
+            .oneshot(
+                Request::get("/")
+                    .header("authorization", "Bearer sekret123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(body_string(res).await.contains("FlowScope"));
+
+        // (6) token 与凭据错误组合仍 401（Bearer 优先于 query，均需命中）
+        let (status, _) = req_json(
+            &app,
+            Request::get("/api/agents?token=sekret123")
+                .header("authorization", "Bearer nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

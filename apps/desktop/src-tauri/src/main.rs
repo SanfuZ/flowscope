@@ -87,7 +87,7 @@ fn main() {
         .expect("创建 tokio runtime 失败");
 
     let port = rt.block_on(async {
-        let (_state, router) = bootstrap(&home, mock_agent.clone(), dist.clone())
+        let (_state, router) = bootstrap(&home, mock_agent.clone(), dist.clone(), None)
             .await
             .expect("bootstrap 组装失败");
 

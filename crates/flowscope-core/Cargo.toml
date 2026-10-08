@@ -25,6 +25,8 @@ tower-http = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+# 前端 dist 嵌入（单文件分发；debug-embed 使 dev/测试同样走编译期嵌入路径）
+rust-embed = { version = "8", features = ["debug-embed"] }
 
 [dev-dependencies]
 # Integration tests spawn the Task-7 mock agent binary; assert_cmd locates it

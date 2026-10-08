@@ -6,8 +6,18 @@ import type { AgentRow, RunRow, StartRunResult, WorkflowDetail, WorkflowGraph, W
 
 const BASE = window.location.origin;
 
+// 访问令牌（flowscope-server 独立分发形态）：入口地址自带 ?token=（server 启动
+// 时打印），模块加载时捕获一次，追加到每个 API 请求与 SSE 订阅 URL 上。URL 无
+// token 参数时（桌面 / dev 模式）完全无行为变化。
+const URL_TOKEN = new URLSearchParams(window.location.search).get('token');
+
+function withToken(path: string): string {
+  if (!URL_TOKEN) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(URL_TOKEN)}`;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}${withToken(path)}`, {
     headers: init?.body != null ? { 'content-type': 'application/json' } : undefined,
     ...init,
   });
@@ -102,15 +112,18 @@ export const api = {
    *  返回内容（非 JSON 信封），故不走 req<T>，返回纯文本由调用方解析。 */
   getArtifact: async (runId: string, node: string, name: string): Promise<string> => {
     const res = await fetch(
-      `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(node)}/${encodeURIComponent(name)}`,
+      withToken(
+        `${BASE}/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(node)}/${encodeURIComponent(name)}`,
+      ),
     );
     if (!res.ok) throw new Error(`artifact ${node}/${name} HTTP ${res.status}`);
     return res.text();
   },
 
-  /** SSE 订阅地址（相对路径，EventSource 会拼上当前 origin）。 */
+  /** SSE 订阅地址（相对路径，EventSource 会拼上当前 origin；URL 带 token 时
+   *  追加同值 token 参数——EventSource 无法携带自定义请求头）。 */
   eventsUrl: (runId: string, after: number): string =>
-    `/api/runs/${encodeURIComponent(runId)}/events?after=${after}`,
+    withToken(`/api/runs/${encodeURIComponent(runId)}/events?after=${after}`),
 };
 
 /** 供需要图结构但已有 yaml 文本的调用方复用（如编辑器预览）。 */

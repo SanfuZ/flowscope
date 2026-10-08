@@ -146,7 +146,7 @@ async fn main() {
         );
     }
 
-    let (state, router) = bootstrap(&args.home, mock_bin.clone(), dist.clone())
+    let (state, router) = bootstrap(&args.home, mock_bin.clone(), dist.clone(), None)
         .await
         .expect("bootstrap 失败");
     seed_workflows(&state);
