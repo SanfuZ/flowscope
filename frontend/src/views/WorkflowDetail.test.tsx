@@ -643,6 +643,111 @@ edges: []
   });
 });
 
+describe('WorkflowDetail：保存到文件夹等价手术（内容未变保留文件注释）', () => {
+  const DIR = 'D:/team/wf';
+  const FILE = '01-collect.yaml';
+  // 与磁盘来源文件同文（含注释 + tags）——「在编辑器打开」导入后画布未动，
+  // modelsEqualExceptTags 成立 → 直存应走文件原文通道而非 toYaml() 重排。
+  const FILE_YAML = `# 团队注释：编辑器保存须保留（勿重排）
+meta:
+  name: origin-wf
+  version: 3
+  tags:
+    - 演示
+params: {}
+nodes:
+  - id: step1
+    agent: mock
+    prompt: from-folder
+edges: []
+`;
+
+  /** mock 磁盘状态：来源目录里就是 FILE_YAML 本尊（valid、tags 演示）。 */
+  const mockOriginFile = () =>
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({
+      dir: DIR,
+      files: [
+        {
+          file: FILE,
+          name: 'origin-wf',
+          version: 3,
+          valid: true,
+          error: null,
+          yaml: FILE_YAML,
+          tags: ['演示'],
+        },
+      ],
+    });
+
+  it('origin 文件带注释、画布未动：直存 yaml === 文件原文（注释/排版一字不动）', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    mockOriginFile();
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: DIR, file: FILE, bytes: 1 });
+    renderAt('/workflows/new', { importedYaml: FILE_YAML, originDir: DIR, originFile: FILE });
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件夹' }));
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.listFolderWorkflows)).toHaveBeenCalledWith(DIR); // 等价性检查读的是来源目录
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.dir).toBe(DIR);
+    expect(arg.file).toBe(FILE);
+    expect(arg.yaml).toBe(FILE_YAML); // 原文整写：不是 toYaml() 的重排产物
+  });
+
+  it('画布只改 tags：直存收到手术原文（新 tags 在、旧 tags 不在、注释保留）', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    mockOriginFile();
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: DIR, file: FILE, bytes: 1 });
+    renderAt('/workflows/new', { importedYaml: FILE_YAML, originDir: DIR, originFile: FILE });
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    act(() => useEditorStore.getState().updateModelMeta({ tags: ['新组'] })); // 只改 tags：内容等价仍成立
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件夹' }));
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.yaml).toContain('# 团队注释：编辑器保存须保留（勿重排）'); // 手术在原文上
+    expect(arg.yaml).toContain('- 新组');
+    expect(arg.yaml).not.toContain('- 演示');
+  });
+
+  it('画布改了 prompt（内容已真变）：退回 toYaml() 全量序列化（注释不保留、tags 仍在）', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    mockOriginFile();
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: DIR, file: FILE, bytes: 1 });
+    renderAt('/workflows/new', { importedYaml: FILE_YAML, originDir: DIR, originFile: FILE });
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    act(() => useEditorStore.getState().updateNode('step1', { prompt: 'changed' })); // 内容真变
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件夹' }));
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.yaml).toContain('prompt: changed'); // 新内容在
+    expect(arg.yaml).not.toContain('# 团队注释'); // 序列化重排：注释无从保留
+    expect(arg.yaml).toContain('- 演示'); // 画布 tags 随序列化写回
+  });
+
+  it('无 origin 另存（标记未改）：yaml = toYaml() 序列化，且不做来源目录请求', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    localStorage.setItem('fs-workflow-dir', 'D:/cached');
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: 'D:/cached', file: 'x.yaml', bytes: 1 });
+    renderAt('/workflows/new', { importedYaml: FILE_YAML }); // 无 origin → 无等价检查
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: '另存到文件夹…' }));
+    const dlg = screen.getByRole('dialog', { name: '保存到文件夹' });
+    fireEvent.change(within(dlg).getByLabelText('文件名'), { target: { value: 'x.yaml' } });
+    fireEvent.click(within(dlg).getByRole('button', { name: '保存' })); // 标记未动（= 演示）
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.file).toBe('x.yaml');
+    expect(arg.yaml).toContain('name: origin-wf'); // 序列化产物
+    expect(arg.yaml).toContain('- 演示'); // 标记未改：无手术
+    expect(arg.yaml).not.toContain('# 团队注释'); // 序列化天然不带注释（与原文通道的区别）
+    expect(vi.mocked(api.listFolderWorkflows)).not.toHaveBeenCalled(); // localStorage 命中，无任何目录请求
+  });
+});
+
 describe('WorkflowDetail：save-ux 未保存离开拦截', () => {
   it('脏态路由跳转弹确认模态：留下留在原页，离开放行', async () => {
     vi.mocked(api.listAgents).mockResolvedValue(AGENTS);

@@ -16,8 +16,13 @@
 //     对话框选目录+文件名。「另存到文件夹…」：总是弹对话框（Save As 一等
 //     公民，预填 effectiveOrigin ?? localStorage 目录 + model.name 合法化），
 //     可改目录/文件名并**派生标记**——对话框「标记」初值 = model.tags join，
-//     保存时若与画布 tags 不同则对 toYaml() 结果做 setYamlTags 文档手术
-//     （只改 meta.tags 行，画布 model 本身不动：文件派生、画布保持）。
+//     保存时若与画布 tags 不同则对 yaml 做 setYamlTags 文档手术（只改
+//     meta.tags 行，画布 model 本身不动：文件派生、画布保持）。两条保存
+//     路径的 yaml 均由 buildFolderYaml 组装（**等价手术优先**）：有 origin
+//     且来源文件内容与画布等价（modelsEqualExceptTags，忽略 tags）→ 以文件
+//     原文为基（tags 相同整写、不同只动 tags 行——**注释/排版保留**，与文件
+//     夹页「标记/派生」同一手术纪律）；内容已真改/读取失败/无 origin →
+//     toYaml() 全量序列化（绑在旧内容上的注释无从保留）+ 可选 tags 手术。
 //     目录预填 localStorage fs-workflow-dir（文件夹页同键）→ 后端默认目录；
 //     文件名缺 .yaml/.yml 后缀自动补 .yaml。保存成功更新 savedOrigin（后续
 //     主按钮一键直达新路径）+ toast + 失效 ['folder-workflows'] + 关对话框；
@@ -53,12 +58,26 @@ import { useBlocker, useLocation, useNavigate, useParams } from 'react-router-do
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { api } from '../api/client';
 import type { WorkflowDetail as WorkflowDetailRow } from '../api/types';
-import { setYamlTags } from '../api/workflowModel';
+import { parseWorkflowModel, setYamlTags } from '../api/workflowModel';
+import type { WorkflowModel } from '../api/workflowModel';
 import { validateWorkflow } from '../lib/validate';
 import { useEditorStore } from '../store/editorStore';
 import { DEMO_AGENT_KEYS } from '../components/Palette';
 import EditableCanvas from '../components/EditableCanvas';
 import PropertyPanel from '../components/PropertyPanel';
+
+/** 深比较两个文档模型是否等价（**忽略 tags**——tags 差异永远走 setYamlTags
+ *  手术通道，不构成「内容已变」）。用 JSON.stringify 直接比较的前提（成立）：
+ *  两边都出自 parseWorkflowModel 的同一构造路径（文件侧刚解析、画布侧
+ *  loadYaml 时解析），对象键为固定的构造插入序，无需稳定化键序。 */
+function modelsEqualExceptTags(a: WorkflowModel, b: WorkflowModel): boolean {
+  const strip = (m: WorkflowModel): Record<string, unknown> => {
+    const copy: Record<string, unknown> = { ...m };
+    delete copy.tags;
+    return copy;
+  };
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+}
 
 export default function WorkflowDetail() {
   const { id = '' } = useParams();
@@ -223,12 +242,14 @@ export default function WorkflowDetail() {
   });
 
   // --- 保存到文件夹（通用化 + 另存派生）：一键写回 effectiveOrigin 或对话框
-  // 选定路径。直存 yaml = toYaml()（已含画布 tags）；对话框保存可派生标记——
-  // 「标记」输入与画布 model.tags 不同时对 toYaml() 做 setYamlTags 手术
-  //（model 本身不动：保存的是派生文件，画布保持原 tags）。校验门与「保存」
-  // 一致（problems 非空禁用）；点击先 blur 冲刷属性面板的防抖提交（复用
-  // Ctrl+S 的冲刷纪律）再取文档。成功 → 记 savedOrigin + toast「已保存到
-  // <file> ✓」+ 失效文件夹查询缓存 + 关对话框（若经对话框发起）；失败 →
+  // 选定路径。yaml 组装走 buildFolderYaml（**等价手术优先**）：有 origin 且来
+  // 源文件内容与画布等价（忽略 tags）→ 以文件原文为基（保留注释/排版），只
+  // 在 tags 有变时 setYamlTags 手术；内容已真改/无 origin/读取失败 → toYaml()
+  // 全量序列化（绑在旧内容上的注释无从保留），对话框「标记」与画布 tags 不同
+  // 再手术（model 本身不动：保存的是派生文件，画布保持原 tags）。校验门与
+  // 「保存」一致（problems 非空禁用）；点击先 blur 冲刷属性面板的防抖提交
+  // （复用 Ctrl+S 的冲刷纪律）再取文档。成功 → 记 savedOrigin + toast「已保存
+  // 到 <file> ✓」+ 失效文件夹查询缓存 + 关对话框（若经对话框发起）；失败 →
   // mutation.error 就地显示（对话框开着显在对话框内，直存显在 fs-editor-msgs）。
   const [folderDlgOpen, setFolderDlgOpen] = useState(false);
   const [folderDir, setFolderDir] = useState('');
@@ -258,12 +279,59 @@ export default function WorkflowDetail() {
     },
   });
 
-  /** 一键直存（有 effectiveOrigin 时主按钮路径）：画布原文（含画布 tags）整写。 */
-  const saveToFolder = () => {
+  /** 组装「保存到文件夹」的 yaml（直存/对话框两条路径共用）：内容未变优先
+   *  等价手术——直存不再无条件 toYaml() 重排（那会丢掉来源文件的注释与排版，
+   *  用户实测踩过：01-collect.yaml 被重写成序列化格式）。
+   *  - 有 effectiveOrigin：静默 listFolderWorkflows(dir) 找来源文件，合法 →
+   *    parseWorkflowModel 与画布比较（modelsEqualExceptTags，忽略 tags）：
+   *    等价 → 以**文件原文**为基：targetTags 与文件 tags 相同 → 原文整写
+   *    （零改动）；不同 → setYamlTags 只动 meta.tags 行（注释/排版保留）。
+   *    网络/解析失败、文件不在（另存到的新路径）或内容已真改 → 走下述退回。
+   *  - 退回路径（无 origin 或内容已变）：toYaml()；targetTags 与画布 tags
+   *    不同再 setYamlTags（画布 model 恒不动）。 */
+  const buildFolderYaml = async (targetTags: string[]): Promise<string> => {
+    const model = useEditorStore.getState().model;
+    if (model && effectiveOrigin) {
+      try {
+        const res = await api.listFolderWorkflows(effectiveOrigin.dir);
+        const row = res.files.find((f) => f.file === effectiveOrigin.file);
+        if (row && row.valid) {
+          const parsed = parseWorkflowModel(row.yaml);
+          if (parsed.model && modelsEqualExceptTags(parsed.model, model)) {
+            const fileTags = parsed.model.tags ?? [];
+            return targetTags.join('\u0000') === fileTags.join('\u0000')
+              ? row.yaml // tags 也一致：文件原文整写（注释/排版一字不动）
+              : setYamlTags(row.yaml, targetTags); // 只改 meta.tags：文档手术
+          }
+        }
+      } catch {
+        /* 读取/解析失败（网络、目录变化等）：退回全量序列化（后端校验兜底） */
+      }
+    }
+    let yaml = useEditorStore.getState().toYaml();
+    const modelTags = useEditorStore.getState().model?.tags ?? [];
+    if (targetTags.join('\u0000') !== modelTags.join('\u0000')) {
+      yaml = setYamlTags(yaml, targetTags); // 只改 meta.tags：序列化文本上的手术
+    }
+    return yaml;
+  };
+
+  /** 一键直存（有 effectiveOrigin 时主按钮路径）：目标 tags = 画布 tags——
+   *  内容未变时保留来源文件注释/排版（buildFolderYaml 等价手术），已变则
+   *  全量序列化。 */
+  const saveToFolder = async () => {
     if (!effectiveOrigin) return; // 按钮已分流，防御性兜底
     (document.activeElement as HTMLElement | null)?.blur(); // 冲刷防抖提交
     if (folderSaveMut.isPending) return;
-    folderSaveMut.mutate({ ...effectiveOrigin, yaml: useEditorStore.getState().toYaml() });
+    try {
+      const yaml = await buildFolderYaml(useEditorStore.getState().model?.tags ?? []);
+      if (!folderSaveMut.isPending) folderSaveMut.mutate({ ...effectiveOrigin, yaml });
+    } catch {
+      // 手术抛错（理论不可达）：退回纯序列化保底，不让保存卡死
+      if (!folderSaveMut.isPending) {
+        folderSaveMut.mutate({ ...effectiveOrigin, yaml: useEditorStore.getState().toYaml() });
+      }
+    }
   };
 
   /** 打开「保存到文件夹/另存」对话框。prefill（另存/有 origin 改路径）：目录/
@@ -307,10 +375,11 @@ export default function WorkflowDetail() {
   };
 
   /** 对话框保存：客户端预校验（目录非空、文件名非空且无 / \、缺 .yaml/.yml
-   *  后缀自动补 .yaml——后端仍兜底）→ blur 冲刷 → 组装 yaml（标记与画布
-   *  tags 不同则 setYamlTags 文档手术，model 不动）→ saveFolderWorkflow；
-   *  失败对话框保留并显示服务端错误。 */
-  const saveViaDialog = () => {
+   *  后缀自动补 .yaml——后端仍兜底）→ blur 冲刷 → buildFolderYaml（与直存
+   *  同一等价手术逻辑：另存到 origin 同路径且内容未变时保留文件原文；目标
+   *  tags = 对话框「标记」，与画布 tags 不同则手术，model 不动）→
+   *  saveFolderWorkflow；失败对话框保留并显示服务端错误。 */
+  const saveViaDialog = async () => {
     const dir = folderDir.trim();
     let file = folderFile.trim();
     if (dir === '') {
@@ -334,11 +403,7 @@ export default function WorkflowDetail() {
     (document.activeElement as HTMLElement | null)?.blur(); // 冲刷防抖提交
     // 手术抛错（toYaml 输出恒有 meta，理论不可达）→ 就地提示不发请求
     try {
-      let yaml = useEditorStore.getState().toYaml();
-      const modelTags = useEditorStore.getState().model?.tags ?? [];
-      if (dialogTags.join('\u0000') !== modelTags.join('\u0000')) {
-        yaml = setYamlTags(yaml, dialogTags); // 只改 meta.tags：文件派生、画布不动
-      }
+      const yaml = await buildFolderYaml(dialogTags);
       if (!folderSaveMut.isPending) folderSaveMut.mutate({ dir, file, yaml });
     } catch (e) {
       setFolderError(e instanceof Error ? e.message : String(e));
