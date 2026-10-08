@@ -19,6 +19,7 @@ vi.mock('../api/client', () => ({
     listAgents: vi.fn(),
     getWorkflow: vi.fn(),
     saveWorkflow: vi.fn(),
+    saveFolderWorkflow: vi.fn(),
     startRun: vi.fn(),
   },
 }));
@@ -418,6 +419,87 @@ describe('WorkflowDetail：save-ux 快捷键与 toast', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('WorkflowDetail：保存到文件夹（origin 入口）', () => {
+  const ORIGIN_DIR = 'D:/team/wf';
+  const ORIGIN_FILE = 'a.yaml';
+  // 含 tags（写回文件夹时随 YAML 保留）
+  const ORIGIN_YAML = `meta:
+  name: origin-wf
+  version: 3
+  tags:
+    - 演示
+params: {}
+nodes:
+  - id: step1
+    agent: mock
+    prompt: from-folder
+edges: []
+`;
+
+  it('无 origin state：不显示「保存到文件夹」按钮', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    renderAt('/workflows/new');
+    await screen.findByRole('button', { name: '保存' });
+    expect(screen.queryByRole('button', { name: '保存到文件夹' })).toBeNull();
+  });
+
+  it('有 origin（new 页）：点击调用 saveFolderWorkflow（yaml 含 tags）→ toast 已保存到 <file> ✓', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({
+      dir: ORIGIN_DIR,
+      file: ORIGIN_FILE,
+      bytes: 120,
+    });
+    renderAt('/workflows/new', {
+      importedYaml: ORIGIN_YAML,
+      originDir: ORIGIN_DIR,
+      originFile: ORIGIN_FILE,
+    });
+
+    const btn = (await screen.findByRole('button', { name: '保存到文件夹' })) as HTMLButtonElement;
+    expect(btn.title).toBe(`${ORIGIN_DIR}\\${ORIGIN_FILE}`); // 目标路径
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+    expect(btn.disabled).toBe(false); // 合法文档：可点
+
+    fireEvent.click(btn);
+    await waitFor(() => expect(vi.mocked(api.saveFolderWorkflow)).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.dir).toBe(ORIGIN_DIR);
+    expect(arg.file).toBe(ORIGIN_FILE);
+    expect(arg.yaml).toContain('name: origin-wf'); // 画布当前内容
+    expect(arg.yaml).toContain('- 演示'); // tags 随 YAML 写回
+
+    const toast = await screen.findByTestId('save-toast');
+    expect(toast.textContent).toContain('已保存到 a.yaml');
+    expect(toast.textContent).toContain('✓');
+  });
+
+  it('有 origin：校验问题禁用（同保存门，title 显示首条问题）；失败显示错误', async () => {
+    vi.mocked(api.listAgents).mockResolvedValue(AGENTS);
+    vi.mocked(api.saveFolderWorkflow).mockRejectedValue(new Error('非法文件名'));
+    renderAt('/workflows/new', {
+      importedYaml: ORIGIN_YAML,
+      originDir: ORIGIN_DIR,
+      originFile: ORIGIN_FILE,
+    });
+    const btn = (await screen.findByRole('button', { name: '保存到文件夹' })) as HTMLButtonElement;
+    await waitFor(() => expect(useEditorStore.getState().loaded).toBe(true));
+
+    // 校验问题（meta.name 清空）→ 禁用 + title 为首条问题
+    act(() => useEditorStore.getState().updateModelMeta({ name: '' }));
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toContain('meta.name');
+    expect(vi.mocked(api.saveFolderWorkflow)).not.toHaveBeenCalled();
+
+    // 修复后可点；请求失败 → 就地错误文本
+    act(() => useEditorStore.getState().updateModelMeta({ name: 'fixed' }));
+    expect(btn.disabled).toBe(false);
+    fireEvent.click(btn);
+    const err = await screen.findByText(/保存到文件夹失败：非法文件名/);
+    expect(err.className).toContain('fs-error-text');
   });
 });
 

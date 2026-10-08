@@ -1977,3 +1977,56 @@ select.fs-form-input {
   font-size: 12px;
   margin-bottom: 12px;
 }
+
+/* --- 文件夹页：分组行 / tag 徽标（/folder） --- */
+
+/* 组行：整行可点（展开/收起），浅于数据行的分区头 */
+.fs-table tr.fs-folder-group {
+  cursor: pointer;
+  user-select: none;
+}
+
+.fs-table tr.fs-folder-group td {
+  background: var(--surface-2);
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text);
+  letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fs-table tr.fs-folder-group:hover td {
+  background: var(--surface-3);
+}
+
+/* 展开箭头（▶ 收起 / ▾ 展开）：等宽字体对齐 */
+.fs-folder-group__chevron {
+  display: inline-block;
+  width: 18px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.fs-folder-group__label {
+  white-space: nowrap;
+}
+
+/* tag 小徽标：行内 pill，随名称列展示全部 tag */
+.fs-tag-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(38, 208, 206, 0.35);
+  background: rgba(38, 208, 206, 0.1);
+  color: var(--accent-2);
+  font-size: 11px;
+  line-height: 1.6;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.fs-folder-name {
+  vertical-align: middle;
+}

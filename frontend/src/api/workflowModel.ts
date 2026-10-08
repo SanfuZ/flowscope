@@ -31,6 +31,9 @@ export interface EdgeModel {
 export interface WorkflowModel {
   name: string;
   version: number;
+  /** 分类标记（meta.tags，可选）：不进引擎语义；文件夹页按首个 tag 分组，
+   *  「保存到文件夹」时随 YAML 原文写回。空数组序列化时省略（等同未设）。 */
+  tags?: string[];
   params: Record<string, string | number | boolean>;
   /** 节点失败策略（透传，不深校验）：`abort_run`（默认，缺省同义）或 `continue_independent`。 */
   on_node_failure?: string;
@@ -59,6 +62,7 @@ export function parseWorkflowModel(yaml: string): { model?: WorkflowModel; error
   // meta：必填映射；name 必填非空字符串，version 可省默认 1
   let name = '';
   let version = 1;
+  let tags: string[] | undefined;
   if (!isPlainObject(root.meta)) {
     errors.push('缺少 meta 映射（meta.name 必填非空字符串，meta.version 可省默认 1）');
   } else {
@@ -73,6 +77,14 @@ export function parseWorkflowModel(yaml: string): { model?: WorkflowModel; error
       errors.push('meta.version 必须为数字（可省略，默认 1）');
     } else {
       version = root.meta.version;
+    }
+    // tags：可选字符串数组（空数组等同未设，收为 undefined 以省略序列化）
+    if (root.meta.tags == null) {
+      // 缺省不携带
+    } else if (!Array.isArray(root.meta.tags) || !root.meta.tags.every((t) => typeof t === 'string')) {
+      errors.push('meta.tags 必须是字符串数组');
+    } else if (root.meta.tags.length > 0) {
+      tags = root.meta.tags;
     }
   }
 
@@ -162,6 +174,7 @@ export function parseWorkflowModel(yaml: string): { model?: WorkflowModel; error
 
   if (errors.length > 0) return { errors };
   const model: WorkflowModel = { name, version, params, nodes, edges };
+  if (tags !== undefined) model.tags = tags;
   if (on_node_failure !== undefined) model.on_node_failure = on_node_failure;
   return { model, errors: [] };
 }
@@ -171,7 +184,12 @@ export function parseWorkflowModel(yaml: string): { model?: WorkflowModel; error
 export function serializeWorkflowYaml(model: WorkflowModel): string {
   return stringify(
     {
-      meta: { name: model.name, version: model.version },
+      meta: {
+        name: model.name,
+        version: model.version,
+        // 键序 name/version/tags；空数组视为未设（省略字段）
+        ...(model.tags !== undefined && model.tags.length > 0 ? { tags: model.tags } : {}),
+      },
       params: model.params, // 空映射也输出（{}），保持顶层键稳定
       ...(model.on_node_failure !== undefined ? { on_node_failure: model.on_node_failure } : {}),
       nodes: model.nodes.map((n) => {

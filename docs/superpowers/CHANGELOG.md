@@ -2,6 +2,11 @@
 
 按时间序记录各次交付；细节见对应计划/报告与 `specs/2026-10-02-flowscope-current-state.md`（现状权威文档）。
 
+## 2026-10-02 · 文件夹页增强：分类标记 / 保存路径 / 刷新（e8d916c + `feat(frontend): 文件夹页分类标记与分组收起、编辑器保存回文件夹、刷新（含文档同步）`）
+- 后端：`WorkflowDef`/`RawMeta` 增 `meta.tags`（`Option<Vec<String>>`，不进引擎语义，编排忽略）；`GET /api/fs/workflows` 条目带 `tags`（缺省空数组）；新 `POST /api/fs/workflows/save` `{dir,file,yaml}`——目录存在/文件名防穿越+`.yaml|.yml`/YAML 可解析三层 400 校验后覆盖写回，响应 `{dir,file,bytes}`。
+- 前端：文件夹页按**首个 tag** 分组（组名集合字母序、「未分类」恒最后、组内名称不区分大小写排序），组行 ▶/▾ 展开/收起（localStorage `fs-folder-collapsed` 按目录记忆），行 tag 小徽标，「刷新」重读当前目录；「在编辑器打开」带 originDir/originFile → 编辑器 new 页「保存」旁多「**保存到文件夹**」按钮（校验门与保存一致、先 blur 冲刷，成功 toast「已保存到 <file> ✓」）；工作流设置「标签」输入（中英文逗号切分 trim 去空，空=删字段），YAML meta 键序 name/version/tags。
+- 测试：cargo 57（+4）/ vitest 132（+12）/ e2e 4/4（specs 未动）。
+
 ## 2026-10-02 · 工作流文件夹页（9a4ce1d / 424ea3f / 18142f0）
 - 侧边栏「文件夹」页：读取磁盘目录 `*.yaml/*.yml`，按名称字母序展示（名称/版本/文件/解析状态），一键载入画布编辑器（importedYaml 经 location.state，种子交换跳过）。
 - `GET /api/fs/workflows?dir=`；默认目录 `FLOWSCOPE_WORKFLOW_DIR` → `~/.flowscope/workflows`（首启种子 hello-zcode.yaml）；前端 localStorage 记忆目录。

@@ -2,18 +2,18 @@
 
 - 日期：2026-10-02 ｜ 对应 main：`18142f0` ｜ 远端：https://github.com/SanfuZ/flowscope（私有）
 - 定位：**后续整体修改的单一权威参考**。历史设计（M1 spec）与各里程碑计划保留在原处作记录；本文档描述系统**当前实际行为**。改动落地后请同步更新本文档。
-- 测试基线：cargo **53**（51 lib + 2 e2e）· vitest **120** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
+- 测试基线：cargo **57**（55 lib + 2 e2e）· vitest **132** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
 
 ## 1. 功能总览
 
 | 子系统 | 现状 |
 |---|---|
 | ACP 接入 | 官方 `agent-client-protocol` crate 2.2（Client 角色，v1 稳定面）；agent 经 `agents.toml` 注册（command/cwd/env/model/permission_default）；内置演示 agent `mock`/`bad-mock`；**ZCode 经 zcode-acp-server 桥自动注册**（见 §4） |
-| 工作流引擎 | YAML DSL（meta/params/on_node_failure/nodes[id,agent,prompt,output_schema,retry,timeout_ms]/edges[from,to,when]）；Kahn 拓扑+条件边（==/contains/and）+层内并行（Semaphore 4）；重试退避/超时/取消/跳过级联；minijinja Strict 模板（`{{ params.x }}`、`{{ nodes.<id>.output.<path> }}`）；output_schema 结构化提取 |
+| 工作流引擎 | YAML DSL（meta（含可选 `tags` 标记，编排忽略）/params/on_node_failure/nodes[id,agent,prompt,output_schema,retry,timeout_ms]/edges[from,to,when]）；Kahn 拓扑+条件边（==/contains/and）+层内并行（Semaphore 4）；重试退避/超时/取消/跳过级联；minijinja Strict 模板（`{{ params.x }}`、`{{ nodes.<id>.output.<path> }}`）；output_schema 结构化提取 |
 | 事件溯源 | SQLite（WAL）单文件 `~/.flowscope/flowscope.db`；表 workflows/runs/events/sessions/artifacts；事件只追加，节点状态=事件投影；每 run 内 seq 严格递增 |
 | 实时通道 | SSE `GET /api/runs/:id/events?after=<seq>`（Last-Event-ID 等价）；hub=broadcast(1024)+ring(4096)；**Lagged → 断流促重连回补**；EventSource 自动重连（1s→10s 退避） |
 | 桌面/部署 | Tauri 2 壳（进程内嵌引擎，随机端口，`FLOWSCOPE_DESKTOP_PORT` 可固定）；dev 启动器 `bin/dev`（39271）；bundle.active=false（未出安装包） |
-| 安全边界 | 单人本地工具无鉴权；服务器模式 token 未实现（M2b）；fs 回调白名单=canonicalize 后 cwd 比较；文件夹 API 只读 |
+| 安全边界 | 单人本地工具无鉴权；服务器模式 token 未实现（M2b）；fs 回调白名单=canonicalize 后 cwd 比较；文件夹 API 列表只读 + save 端点限定目录内 `.yaml/.yml` 文件名（防穿越） |
 
 ## 2. 后端 API（前缀 /api，同源）
 
@@ -27,7 +27,8 @@
 | `GET /runs/{id}/events?after=` | SSE：事件 `id:`=seq、`event: fs`、KeepAlive 15s；after=0 即全量回放 |
 | `GET /runs/{id}/artifacts/{node}/{name}` | 节点产物（每成功节点有 `output`） |
 | `GET /agents` | 注册表（key/name/permission_default/healthy——healthy 恒 true，探活未实现） |
-| `GET /fs/workflows?dir=` | **文件夹读取**：列 `*.yaml/*.yml`，parse 取 name/version（失败→valid:false 回退文件名），按 name.to_lowercase() 字母序；目录缺失 400 `目录不存在` |
+| `GET /fs/workflows?dir=` | **文件夹读取**：列 `*.yaml/*.yml`，parse 取 name/version/**tags**（失败→valid:false 回退文件名；tags 缺省空数组），按 name.to_lowercase() 字母序；目录缺失 400 `目录不存在` |
+| `POST /fs/workflows/save` | **保存到文件夹**（body `{dir, file, yaml}`）：dir 存在且为目录、file 无路径分隔符且 `.yaml/.yml` 结尾（防穿越）、yaml 可 parse（三层 400 校验）→ 覆盖写 `dir/file`，响应 `{dir, file, bytes}` |
 
 - 默认 agents.toml / 工作流文件夹种子：bootstrap 首启生成（`~/.flowscope/agents.toml`、`~/.flowscope/workflows/hello-zcode.yaml`——**已存在的文件不覆盖**，改默认模板需删文件重启）。
 - 可配置 env：`FLOWSCOPE_WORKFLOW_DIR`（文件夹页默认目录）、`ZCODE_NODE`/`ZCODE_BIN`/`ZCODE_ACP_BRIDGE`/`ZCODE_ACP_CWD`（ZCode 桥路径覆盖，见 §4）、`FLOWSCOPE_DESKTOP_PORT`、`RUST_LOG`。
@@ -63,14 +64,14 @@ StopReason 5 值映射（acp→NodeFailure）：end_turn→Ok；cancelled→Proc
 |---|---|---|
 | `/` | 运行列表 | 3s 自动刷新；耗时列；空态引导 |
 | `/workflows` | 工作流列表 | 卡片；「新建工作流」→ /workflows/new |
-| `/workflows/:id`（含 new） | **画布编辑器（主交互）** | Palette（隐藏演示 agent mock/bad-mock；整行可点+落场动画）+ 可编辑 DAG（拖入/拉线/删除/拖移）+ PropertyPanel 三态（节点属性/条件边三件套+raw/工作流设置含新节点默认）+ 撤销重做（快照 50 步，Ctrl+Z/Y，输入框内跳过）+ 校验徽章 + 保存（校验门禁+Ctrl+S+toast+未保存离开拦截 useBlocker）+ YAML 源码滑层（双向，导入失败自动展开原文+错误） |
-| `/folder` | 工作流文件夹 | 目录输入+读取；localStorage 记忆；字母序列表；一键进编辑器（importedYaml 经 location.state；解析失败自动开 YAML 层） |
+| `/workflows/:id`（含 new） | **画布编辑器（主交互）** | Palette（隐藏演示 agent mock/bad-mock；整行可点+落场动画）+ 可编辑 DAG（拖入/拉线/删除/拖移）+ PropertyPanel 三态（节点属性/条件边三件套+raw/工作流设置含新节点默认与**标签输入**）+ 撤销重做（快照 50 步，Ctrl+Z/Y，输入框内跳过）+ 校验徽章 + 保存（校验门禁+Ctrl+S+toast+未保存离开拦截 useBlocker）+ **保存到文件夹**（origin 入口：文件夹进来的 new 页在「保存」旁多此按钮，含 tags 写回来源文件）+ YAML 源码滑层（双向，导入失败自动展开原文+错误） |
+| `/folder` | 工作流文件夹 | 目录输入+读取+**刷新**（重读当前目录）；localStorage 记忆；**按首个 `meta.tags` 分组**（组名集合字母序、未分类恒最后、组内名称字母序），组行展开/收起（localStorage `fs-folder-collapsed` 按目录记忆），行 tag 小徽标；一键进编辑器（importedYaml + **originDir/originFile** 经 location.state；解析失败自动开 YAML 层） |
 | `/runs/:id` | 运行监控 | DAG 状态着色+消息预览行（running 尾 48 字/succeeded ✅）；顶栏 run-status；双击节点→会话视图 |
 | `/runs/:runId/sess/:nodeId` | 节点会话视图 | workflow-demo.html 形式：用户气泡(prompt 来自 node.started)/思考折叠块(默认收起，「N 段·共 X 字」摘要)/工具卡/stop chip/协议事件抽屉（onEvent 旁路收集）；SSE after=0 回放+实时统一 |
 
 ### 状态与关键 store
 - `runStore`：NodeView{status,message,reasoning[],tools[],plan{entries},logs[](cap500),prompt?,error}；applyEvent 纯函数（唯一写入点）；`seq<=lastSeq` 丢弃防重放。
-- `editorStore`：文档模型（唯一事实源）+ positions（视图态不持久）+ 快照撤销重做（cap 50）+ `newNodeDefaults{retryMax:2,backoffMs:3000,timeoutMs:600000}`（编辑器偏好：不进历史/不置脏；0=省略字段）+ updateModelMeta；**新建种子节点自动换首个非演示 agent**（dirty 或导入时跳过）。
+- `editorStore`：文档模型（唯一事实源）+ positions（视图态不持久）+ 快照撤销重做（cap 50）+ `newNodeDefaults{retryMax:2,backoffMs:3000,timeoutMs:600000}`（编辑器偏好：不进历史/不置脏；0=省略字段）+ updateModelMeta（name/version/**tags**/params/on_node_failure）；**新建种子节点自动换首个非演示 agent**（dirty 或导入时跳过）。
 - 校验 `lib/validate.ts` 镜像后端规则（id 唯一/边引用/Kahn 环/when 语法）；保存门禁 + 面板就地提示。
 - 主题：深色可观测风，全变量化（styles.css `:root`）；UI 文案中文；无 UI 组件库。
 - 入口按钮/选择器冻结面：e2e 依赖 `palette-add-zcode`（build-via-canvas 辅助函数显式设 step1=mock——真桥拒空 prompt）、`.fs-node--<status>`、`.fs-monitor`、`drawer-*`、`data-testid="run-status"`、按钮「保存」「启动运行」「在编辑器打开」。
@@ -122,6 +123,6 @@ cargo run -p flowscope-desktop        # 桌面版（home=~/.flowscope）
 11. 脱敏接线（config 规则加载+管道应用；`events::redact` 纯函数已备）。
 12. sessions 表落库、token_usage/model 字位、并发可配+指数退避、SSE 回填分页、EventHub 淘汰、fs 回调 spawn_blocking、gen/schemas gitignore。
 13. `session/load` 节点内续问（会话视图 composer 的前置）。
-14. 文件夹页增强候选：从文件夹直接运行（跳过入库）、导出回写文件夹。
+14. 文件夹页增强候选：从文件夹直接运行（跳过入库）。（「导出回写文件夹」已交付：编辑器「保存到文件夹」按钮 + `POST /api/fs/workflows/save`，见 §2/§5。）
 
 **已接受不修（文档化）**：cond `" and "` 引号不感知；YAML 应用不可撤销；多原子 and 仅 raw 可表达；边 id 含 `->` 极端情形；hub 广播乱序窄窗（页面刷新可恢复）；mock-agent 外观项等。

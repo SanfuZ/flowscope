@@ -192,6 +192,26 @@ describe('PropertyPanel：settings 态', () => {
     expect(useEditorStore.getState().dirty).toBe(true);
   });
 
+  it('标签失焦提交：中英文逗号切分 trim 去空；空串删除字段；序列化含/不含 tags', () => {
+    useEditorStore.getState().loadBlank();
+    renderPanel();
+    const tags = screen.getByLabelText('标签') as HTMLInputElement;
+    expect(tags.value).toBe(''); // 无 tags 草稿为空
+
+    fireEvent.change(tags, { target: { value: '演示, alpha，Beta , ,' } });
+    fireEvent.blur(tags);
+    expect(useEditorStore.getState().model!.tags).toEqual(['演示', 'alpha', 'Beta']);
+    expect(useEditorStore.getState().dirty).toBe(true); // 正常编辑纪律
+    expect(useEditorStore.getState().toYaml()).toContain('tags:'); // 随文档序列化
+    expect(useEditorStore.getState().toYaml()).toContain('- 演示');
+
+    // 清空 → 删除字段（序列化不再含 tags）
+    fireEvent.change(tags, { target: { value: '  ' } });
+    fireEvent.blur(tags);
+    expect(useEditorStore.getState().model!.tags).toBeUndefined();
+    expect(useEditorStore.getState().toYaml()).not.toContain('tags:');
+  });
+
   it('新节点默认（T2）：失焦经 updateNodeDefaults 提交偏好，不进历史、不置脏', () => {
     useEditorStore.getState().loadBlank();
     useEditorStore.getState().updateNodeDefaults({ retryMax: 2, backoffMs: 3000, timeoutMs: 600000 });

@@ -10,6 +10,7 @@
 //      的 when 文法（== / contains，contains 仅字符串字面量；多原子 and 结构化表达不了，
 //      三件套留空、仅 raw 可表达）。「清除条件」when → undefined；「删除连线」删边并清选中。
 //   ③ settings 态（selected 为 null 或 {type:'settings'}）—— name（失焦）/ version（失焦）/
+//      标签（失焦：中英文逗号切分 trim 去空，空串删字段；首个 tag 用于文件夹页分组）/
 //      params 键值编辑器（行 = 参数名 + 参数值 + 删除；「添加参数」追加空行；值按标量解析
 //      true/false → 布尔、整数 → number、其余字符串；任一行失焦整体提交 updateModelMeta）/
 //      新节点默认（T2：retry/backoff/timeout 三数字，失焦提交 updateNodeDefaults——
@@ -508,6 +509,7 @@ function SettingsForm() {
 
   const [nameDraft, setNameDraft] = useState(model.name);
   const [versionDraft, setVersionDraft] = useState(String(model.version));
+  const [tagsDraft, setTagsDraft] = useState(model.tags?.join(', ') ?? '');
   const [rows, setRows] = useState<ParamRow[]>(() => toParamRows(model.params));
 
   // 新节点默认三个数字输入：本地草稿 + 失焦提交（镜像 version 字段的失焦纪律）
@@ -525,6 +527,9 @@ function SettingsForm() {
     setVersionDraft(String(model.version));
   }, [model.version]);
   useEffect(() => {
+    setTagsDraft(model.tags?.join(', ') ?? '');
+  }, [model.tags]);
+  useEffect(() => {
     setRows(toParamRows(model.params));
   }, [model.params]);
   useEffect(() => {
@@ -532,6 +537,16 @@ function SettingsForm() {
     setBackoffMsDraft(String(newNodeDefaults.backoffMs));
     setTimeoutMsDraft(String(newNodeDefaults.timeoutMs));
   }, [newNodeDefaults]);
+
+  /** 标签失焦提交：按中英文逗号切分、trim、去空；空串 = 删除字段。
+   *  首个 tag 用于文件夹页分组（见 FolderWorkflows）。 */
+  const commitTags = () => {
+    const tags = tagsDraft
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter((t) => t !== '');
+    updateModelMeta({ tags: tags.length > 0 ? tags : undefined });
+  };
 
   /** 任一行失焦/删行：整体提交 params（空名行跳过；后同名覆盖先名）。 */
   const commitParams = (next: ParamRow[]) => {
@@ -582,6 +597,19 @@ function SettingsForm() {
               const n = Number(versionDraft);
               if (versionDraft.trim() !== '' && Number.isFinite(n)) updateModelMeta({ version: n });
             }}
+          />
+        </label>
+      </div>
+
+      <div className="fs-form-row">
+        <label className="fs-form-label">
+          标签
+          <input
+            className="fs-form-input"
+            placeholder="逗号分隔，首个用于文件夹页分组"
+            value={tagsDraft}
+            onChange={(e) => setTagsDraft(e.target.value)}
+            onBlur={commitTags}
           />
         </label>
       </div>

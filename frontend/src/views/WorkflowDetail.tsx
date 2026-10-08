@@ -9,6 +9,9 @@
 //     不用 window.confirm）。保存成功路径 markSaved() 先于 navigate 且 shouldBlock
 //     实时读 store.getState()，不会被拦截卡住；启动运行用 allowNextNavRef
 //     一次性放行（明确离开意图，不伪装已保存）。
+//   - 保存到文件夹（origin 入口）：FolderWorkflows「在编辑器打开」带 originDir/
+//     originFile → new 页工具栏在「保存」旁多「保存到文件夹」按钮（写回来源
+//     git 文件夹的同名文件，与「保存」进数据库并存；校验门一致，先 blur 冲刷）。
 // 文档事实源在 editorStore（Task 3~5）；本页只做装配：
 //   - 载入：new → loadBlank()（或 location.state.importedYaml → loadYaml，
 //     文件夹工作流入口，见 effect 处注释）；既有 → wfQuery.data.yaml → loadYaml。
@@ -84,10 +87,24 @@ export default function WorkflowDetail() {
   // 文件夹工作流「在编辑器打开」入口（FolderWorkflows → navigate state）：
   // importedYaml 是权威内容 → 替代 loadBlank 直接 loadYaml；同时置 importedRef
   // 令下方种子换选 effect 跳过（导入的单节点 mock 文档不被自动改 agent）。
+  // originDir/originFile（来源文件）：在 new 页据此显示「保存到文件夹」——把
+  // 画布内容写回来源 git 文件夹的同名文件（与「保存」进数据库并存，用户自选）。
   const location = useLocation();
   const importedRef = useRef(false);
-  const importedYaml = (location.state as { importedYaml?: unknown } | null)?.importedYaml;
+  const locationState = location.state as
+    | { importedYaml?: unknown; originDir?: unknown; originFile?: unknown }
+    | null;
+  const importedYaml = locationState?.importedYaml;
   const hasImport = typeof importedYaml === 'string' && importedYaml.length > 0;
+  const originDir =
+    typeof locationState?.originDir === 'string' && locationState.originDir !== ''
+      ? locationState.originDir
+      : undefined;
+  const originFile =
+    typeof locationState?.originFile === 'string' && locationState.originFile !== ''
+      ? locationState.originFile
+      : undefined;
+  const hasOrigin = originDir !== undefined && originFile !== undefined;
   useEffect(() => {
     if (isNew) {
       if (hasImport) {
@@ -162,7 +179,8 @@ export default function WorkflowDetail() {
   );
 
   // --- 保存 toast（save-ux）：成功后右下角浮现 2.2s（替代原 inline「已保存」）---
-  const [toast, setToast] = useState<{ name: string; created: boolean } | null>(null);
+  // folderFile 变体：「保存到文件夹」成功（已保存到 <file> ✓）。
+  const [toast, setToast] = useState<{ name: string; created: boolean; folderFile?: string } | null>(null);
   const toastTimerRef = useRef(0);
   useEffect(() => () => window.clearTimeout(toastTimerRef.current), []);
 
@@ -185,6 +203,29 @@ export default function WorkflowDetail() {
       if (isNew) navigate(`/workflows/${res.id}`, { replace: true });
     },
   });
+
+  // --- 保存到文件夹（origin 入口）：写回来源 git 文件夹的同名文件 ---
+  // toYaml 已含 tags（workflowModel 序列化 meta.tags）。校验门与「保存」一致
+  // （problems 非空禁用）；点击先 blur 冲刷属性面板的防抖提交（复用 Ctrl+S
+  // 的冲刷纪律）再取文档。成功 → toast「已保存到 <file> ✓」+ 失效文件夹
+  // 查询缓存；失败 → mutation.error 就地显示（fs-editor-msgs）。
+  const folderSaveMut = useMutation({
+    mutationFn: () => {
+      const yaml = useEditorStore.getState().toYaml();
+      return api.saveFolderWorkflow({ dir: originDir!, file: originFile!, yaml });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['folder-workflows'] });
+      window.clearTimeout(toastTimerRef.current);
+      setToast({ name: '', created: false, folderFile: originFile });
+      toastTimerRef.current = window.setTimeout(() => setToast(null), 2200);
+    },
+  });
+
+  const saveToFolder = () => {
+    (document.activeElement as HTMLElement | null)?.blur(); // 冲刷防抖提交
+    if (!folderSaveMut.isPending) folderSaveMut.mutate();
+  };
 
   // --- Ctrl/Cmd+S 快捷保存（save-ux）：window 捕获阶段接管浏览器「保存网页」；
   // 仅在可保存态（无校验问题、非保存中、已载入）挂监听；先 blur 焦点元素
@@ -339,6 +380,18 @@ export default function WorkflowDetail() {
           >
             {saveMut.isPending ? '保存中…' : '保存'}
           </button>
+          {/* 文件夹来源入口（origin）：写回来源文件（与「保存」进数据库并存）。
+              保存成功（new → /workflows/:id）后 origin state 随路由消失。 */}
+          {hasOrigin && isNew && (
+            <button
+              className="fs-btn"
+              disabled={problems.length > 0 || folderSaveMut.isPending}
+              title={problems.length > 0 ? problems[0] : `${originDir}\\${originFile}`}
+              onClick={saveToFolder}
+            >
+              {folderSaveMut.isPending ? '保存中…' : '保存到文件夹'}
+            </button>
+          )}
           <button
             className="fs-btn fs-btn--primary"
             disabled={isNew || launching || !loaded}
@@ -361,6 +414,13 @@ export default function WorkflowDetail() {
         <div className="fs-editor-msgs">
           <span className="fs-error-text">
             保存失败：{String((saveMut.error as Error)?.message ?? saveMut.error)}
+          </span>
+        </div>
+      )}
+      {folderSaveMut.isError && (
+        <div className="fs-editor-msgs">
+          <span className="fs-error-text">
+            保存到文件夹失败：{String((folderSaveMut.error as Error)?.message ?? folderSaveMut.error)}
           </span>
         </div>
       )}
@@ -422,9 +482,15 @@ export default function WorkflowDetail() {
       {/* 保存成功 toast（save-ux）：右下角 2.2s 自动消失 */}
       {toast && (
         <div className="fs-toast" role="status" data-testid="save-toast">
-          <span className="fs-toast__check">✓ 已保存</span>
-          {toast.name && <span className="fs-toast__name">{toast.name}</span>}
-          {toast.created && <span className="fs-toast__created">· 已创建</span>}
+          {toast.folderFile !== undefined ? (
+            <span className="fs-toast__check">已保存到 {toast.folderFile} ✓</span>
+          ) : (
+            <>
+              <span className="fs-toast__check">✓ 已保存</span>
+              {toast.name && <span className="fs-toast__name">{toast.name}</span>}
+              {toast.created && <span className="fs-toast__created">· 已创建</span>}
+            </>
+          )}
         </div>
       )}
 

@@ -35,7 +35,7 @@ interface WorkflowRow {
 
 /** GET /api/fs/workflows 行：文件夹里的一个工作流 YAML。valid:false 时
  *  name 回退文件名去扩展名、version 为 null、error 带解析消息——yaml 仍是
- *  文件全文，失败项也可带进编辑器修。 */
+ *  文件全文，失败项也可带进编辑器修。tags 为 meta.tags（缺省空数组）。 */
 export interface FolderWorkflow {
   file: string;
   name: string;
@@ -43,6 +43,7 @@ export interface FolderWorkflow {
   valid: boolean;
   error: string | null;
   yaml: string;
+  tags: string[];
 }
 
 export const api = {
@@ -55,6 +56,15 @@ export const api = {
     req<{ dir: string; files: FolderWorkflow[] }>(
       `/api/fs/workflows${dir ? `?dir=${encodeURIComponent(dir)}` : ''}`,
     ),
+
+  /** POST /api/fs/workflows/save {dir, file, yaml}：把编辑器当前内容写回
+   *  来源 git 文件夹的同名文件（覆盖；后端校验目录存在/文件名防穿越/YAML
+   *  可解析），响应 {dir, file, bytes}。 */
+  saveFolderWorkflow: (body: { dir: string; file: string; yaml: string }): Promise<{ dir: string; file: string; bytes: number }> =>
+    req<{ dir: string; file: string; bytes: number }>('/api/fs/workflows/save', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   /** GET /api/agents：agents.toml 注册的 agent 清单（画布编辑器面板）。 */
   listAgents: (): Promise<AgentRow[]> => req<AgentRow[]>('/api/agents'),
