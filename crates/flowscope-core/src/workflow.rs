@@ -12,6 +12,9 @@ pub struct WorkflowDef {
     pub edges: Vec<EdgeDef>,
     /// 节点失败策略：`"abort_run"`（默认，None 同义）或 `"continue_independent"`。
     pub on_node_failure: Option<String>,
+    /// `meta.tags` 分类标记（可选）：不进引擎语义（编排忽略），仅供 fs API
+    /// 与「保存到文件夹」的文档保真（文件夹页按首个 tag 分组展示）。
+    pub tags: Option<Vec<String>>,
 }
 
 /// 单个节点定义。
@@ -81,6 +84,9 @@ struct RawWorkflow {
 struct RawMeta {
     name: String,
     version: u32,
+    /// 分类标记（可选）：字符串数组；缺省 None（与空数组区分，序列化保真）。
+    #[serde(default)]
+    tags: Option<Vec<String>>,
 }
 
 #[derive(Error, Debug)]
@@ -101,6 +107,7 @@ pub fn parse_yaml(yaml: &str) -> Result<WorkflowDef, WorkflowError> {
         nodes: raw.nodes,
         edges: raw.edges,
         on_node_failure: raw.on_node_failure,
+        tags: raw.meta.tags,
     })
 }
 
@@ -199,5 +206,25 @@ edges:
         assert_eq!(wf.nodes[0].retry.max, 0);
         assert_eq!(wf.nodes[0].retry.backoff_ms, 1000);
         assert_eq!(wf.nodes[0].timeout_ms, None);
+    }
+
+    /// meta.tags（可选）：给出时提升为 Vec<String>；缺省为 None（与空数组区分）。
+    #[test]
+    fn lifts_meta_tags() {
+        let with_tags = VALID.replace(
+            "meta: {name: demo, version: 3}",
+            "meta: {name: demo, version: 3, tags: [演示, alpha]}",
+        );
+        let wf = parse_yaml(&with_tags).unwrap();
+        assert_eq!(wf.tags, Some(vec!["演示".to_owned(), "alpha".to_owned()]));
+        // 缺省 None
+        let wf = parse_yaml(VALID).unwrap();
+        assert_eq!(wf.tags, None);
+        // tags 非字符串数组 → 解析失败（serde 类型错误）
+        let bad = VALID.replace(
+            "meta: {name: demo, version: 3}",
+            "meta: {name: demo, version: 3, tags: 演示}",
+        );
+        assert!(parse_yaml(&bad).is_err());
     }
 }

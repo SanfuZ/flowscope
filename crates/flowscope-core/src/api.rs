@@ -73,6 +73,7 @@ pub fn router_with_static(state: AppState, dist: Option<PathBuf>) -> Router {
         .route("/runs/{id}/artifacts/{node}/{name}", get(get_artifact))
         .route("/agents", get(list_agents))
         .route("/fs/workflows", get(fs_workflows))
+        .route("/fs/workflows/save", post(fs_workflows_save))
         .with_state(state);
     let mut app = Router::new().nest("/api", api);
     if let Some(dist) = dist {
@@ -525,6 +526,8 @@ struct FsWfFile {
     valid: bool,
     error: Option<String>,
     yaml: String,
+    /// `meta.tags`（解析成功才有；失败项恒空数组）。
+    tags: Vec<String>,
 }
 
 /// GET /api/fs/workflows?dir=<可选>：列出目录下 .yaml/.yml 文件，逐个
@@ -532,7 +535,8 @@ struct FsWfFile {
 /// （name.to_lowercase，同名按文件名）返回；解析失败项 `valid:false` 带
 /// error（前端可照样打开进编辑器修）。
 /// 安全注记：本地单人工具，目录来自用户输入属预期行为；本 handler 只读
-/// （列目录 + 读文件），无任何写入端点。
+/// （列目录 + 读文件），文件夹写入走显式的 [`fs_workflows_save`]（带文件名
+/// 防穿越校验）。
 #[derive(Deserialize)]
 struct FsWorkflowsQuery {
     dir: Option<String>,
@@ -582,6 +586,7 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
                     valid: true,
                     error: None,
                     yaml: text,
+                    tags: def.tags.unwrap_or_default(),
                 },
                 Err(e) => FsWfFile {
                     file,
@@ -590,6 +595,7 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
                     valid: false,
                     error: Some(e.to_string()),
                     yaml: text,
+                    tags: Vec::new(),
                 },
             },
             // 文件读不动（权限/编码）：不挡整个列表，按失败项呈现
@@ -600,6 +606,7 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
                 valid: false,
                 error: Some(e.to_string()),
                 yaml: String::new(),
+                tags: Vec::new(),
             },
         };
         files.push(entry);
@@ -621,10 +628,63 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
                 "valid": f.valid,
                 "error": f.error,
                 "yaml": f.yaml,
+                "tags": f.tags,
             })
         })
         .collect();
     Json(json!({ "dir": dir.display().to_string(), "files": files })).into_response()
+}
+
+#[derive(Deserialize)]
+struct FsSaveBody {
+    dir: String,
+    file: String,
+    yaml: String,
+}
+
+/// POST /api/fs/workflows/save（body `{dir, file, yaml}`）：把编辑器当前
+/// 画布内容写回来源 git 文件夹的同名文件（覆盖写）。校验链（全 400）：
+///   - dir 必须存在且为目录（否则 `目录不存在: <path>`）；
+///   - file 防穿越：非空、不含 `/` 与 `\`、非 `..`/`.`、以 `.yaml`/`.yml`
+///     结尾（大小写不敏感），否则 `非法文件名`；
+///   - yaml 先 `parse_yaml` 结构校验（编辑器侧已有校验门，此为最后防线），
+///     失败返回解析错误消息。
+/// 成功：`std::fs::write` 覆盖，响应 `{dir, file, bytes}`。
+async fn fs_workflows_save(body: Result<Json<FsSaveBody>, JsonRejection>) -> Response {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return err_json(StatusCode::BAD_REQUEST, rej.body_text()),
+    };
+    let dir = PathBuf::from(&body.dir);
+    if !dir.is_dir() {
+        return err_json(
+            StatusCode::BAD_REQUEST,
+            format!("目录不存在: {}", dir.display()),
+        );
+    }
+    let lower = body.file.to_lowercase();
+    let valid_name = !body.file.is_empty()
+        && !body.file.contains('/')
+        && !body.file.contains('\\')
+        && body.file != ".."
+        && body.file != "."
+        && (lower.ends_with(".yaml") || lower.ends_with(".yml"));
+    if !valid_name {
+        return err_json(StatusCode::BAD_REQUEST, "非法文件名");
+    }
+    if let Err(e) = workflow::parse_yaml(&body.yaml) {
+        return err_json(StatusCode::BAD_REQUEST, e.to_string());
+    }
+    let path = dir.join(&body.file);
+    match std::fs::write(&path, body.yaml.as_bytes()) {
+        Ok(()) => Json(json!({
+            "dir": dir.display().to_string(),
+            "file": body.file,
+            "bytes": body.yaml.len(),
+        }))
+        .into_response(),
+        Err(e) => err_json(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,6 +1614,171 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let _ = std::fs::remove_file(&file);
+    }
+
+    /// GET /api/fs/workflows：meta.tags 提升为条目的 tags 数组（缺省空数组）。
+    #[tokio::test]
+    async fn fs_workflows_returns_tags_array() {
+        let dir =
+            std::env::temp_dir().join(format!("flowscope-fs-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("tagged.yaml"),
+            "meta: {name: tagged, version: 1, tags: [演示, alpha]}\nnodes:\n  - {id: n1, agent: m, prompt: p}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("plain.yaml"),
+            "meta: {name: plain, version: 1}\nnodes:\n  - {id: n1, agent: m, prompt: p}\n",
+        )
+        .unwrap();
+
+        let app = router(test_state());
+        let (status, body) = req_json(
+            &app,
+            get_req(format!(
+                "/api/fs/workflows?dir={}",
+                enc_url(dir.to_str().unwrap())
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let files = body["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2, "{body}");
+        let tagged = files
+            .iter()
+            .find(|f| f["file"] == "tagged.yaml")
+            .expect("tagged.yaml 在列");
+        assert_eq!(tagged["tags"], json!(["演示", "alpha"]), "{body}");
+        let plain = files
+            .iter()
+            .find(|f| f["file"] == "plain.yaml")
+            .expect("plain.yaml 在列");
+        assert_eq!(plain["tags"], json!([]), "缺省 tags 为空数组: {body}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// POST /api/fs/workflows/save：成功写入并覆盖（读回验证），大写扩展名
+    /// 也放行（大小写不敏感）。
+    #[tokio::test]
+    async fn fs_save_writes_and_overwrites() {
+        let dir = std::env::temp_dir().join(format!(
+            "flowscope-fs-save-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(test_state());
+
+        let yaml_v1 =
+            "meta: {name: save-demo, version: 1}\nnodes:\n  - {id: n1, agent: m, prompt: p1}\n";
+        let (status, body) = req_json(
+            &app,
+            post_json(
+                "/api/fs/workflows/save".into(),
+                json!({"dir": dir.display().to_string(), "file": "save-demo.yaml", "yaml": yaml_v1}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["dir"].as_str().unwrap(), dir.display().to_string());
+        assert_eq!(body["file"].as_str().unwrap(), "save-demo.yaml");
+        assert_eq!(body["bytes"].as_u64(), Some(yaml_v1.len() as u64));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("save-demo.yaml")).unwrap(),
+            yaml_v1
+        );
+
+        // 覆盖写：v2 顶掉 v1
+        let yaml_v2 = "meta: {name: save-demo, version: 2, tags: [演示]}\nnodes:\n  - {id: n1, agent: m, prompt: p2}\n";
+        let (status, body) = req_json(
+            &app,
+            post_json(
+                "/api/fs/workflows/save".into(),
+                json!({"dir": dir.display().to_string(), "file": "save-demo.yaml", "yaml": yaml_v2}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("save-demo.yaml")).unwrap(),
+            yaml_v2
+        );
+
+        // 大写 .YAML 扩展名同样放行（大小写不敏感）
+        let (status, _) = req_json(
+            &app,
+            post_json(
+                "/api/fs/workflows/save".into(),
+                json!({"dir": dir.display().to_string(), "file": "UPPER.YAML", "yaml": yaml_v1}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(dir.join("UPPER.YAML").is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// POST /api/fs/workflows/save 400 三分支：坏目录、非法文件名（路径
+    /// 分隔符 / 穿越 / 非扩展名）、非法 YAML（含解析错误消息）。合法分支
+    /// 不得提前写盘。
+    #[tokio::test]
+    async fn fs_save_rejects_bad_dir_name_and_yaml() {
+        let dir = std::env::temp_dir().join(format!(
+            "flowscope-fs-bad-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(test_state());
+        let d = dir.display().to_string();
+        let ok_yaml = "meta: {name: x, version: 1}\nnodes:\n  - {id: n1, agent: m, prompt: p}\n";
+
+        // 坏目录 → 400 目录不存在
+        let (status, body) = req_json(
+            &app,
+            post_json(
+                "/api/fs/workflows/save".into(),
+                json!({"dir": "D:/nowhere-flowscope", "file": "a.yaml", "yaml": ok_yaml}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with("目录不存在: "),
+            "{body}"
+        );
+
+        // 非法文件名：路径分隔符 / 穿越 / 非扩展名 / 空名 → 400 非法文件名
+        //（`..x.yaml` 不穿越、落在目录内，属合法名不在列）
+        for name in ["a/b.yaml", "a\\b.yaml", "../x.yaml", "plain.txt", ""] {
+            let (status, body) = req_json(
+                &app,
+                post_json(
+                    "/api/fs/workflows/save".into(),
+                    json!({"dir": d, "file": name, "yaml": ok_yaml}),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "file={name:?}: {body}");
+            assert_eq!(body["error"].as_str().unwrap(), "非法文件名", "{body}");
+        }
+        assert!(dir.read_dir().unwrap().next().is_none(), "非法分支不得写盘");
+
+        // 非法 YAML → 400 含解析错误消息
+        let (status, body) = req_json(
+            &app,
+            post_json(
+                "/api/fs/workflows/save".into(),
+                json!({"dir": d, "file": "a.yaml", "yaml": "meta: [broken"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(!body["error"].as_str().unwrap_or("").is_empty(), "{body}");
+        assert!(!dir.join("a.yaml").exists(), "YAML 非法分支不得写盘");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// resolve_dir 优先级：显式 dir > env FLOWSCOPE_WORKFLOW_DIR > 默认
