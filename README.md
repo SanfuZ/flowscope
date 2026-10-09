@@ -216,7 +216,53 @@ agent 面板继续添加节点、拖拽圆点改连线；点节点 / 点连线 /
 
 dev 服务器（浏览器方式）默认用仓库内 `target/dev-home/`，互不干扰。
 
-## 1.4 常见问题
+## 1.4 独立分发：单文件 exe（免安装）
+
+不想装 Rust/Node 环境的目标机器上，用 **release 单文件** 直接跑——前端 UI 已编译期嵌入
+exe（无需磁盘 dist），CRT 已静态链接（**免 VC++ 运行库安装**；桌面版另需系统 WebView2，
+Win10/11 一般自带）。仓库内构建：
+
+```bash
+cd frontend && npm run build && cd ..      # 先产出 dist（嵌入内容来源）
+cargo build --release -p flowscope-core -p flowscope-desktop
+```
+
+### flowscope-server.exe（无头服务器，浏览器使用）
+
+把 `target/release/flowscope-server.exe` 拷到目标机任意目录（建议同目录再放
+`flowscope-mock-agent.exe`，启动时会自动探测注册演示 agent），双击或命令行运行：
+
+```
+flowscope-server.exe                     # 默认 8080 端口，数据目录 ~/.flowscope
+flowscope-server.exe --port 9000 --home D:\fs-data --workflow-dir D:\team-workflows
+```
+
+启动后会在控制台**打印访问入口**（本机所有 IPv4 逐行）：
+
+```
+FlowScope server 已启动（前端 UI 内嵌，无需磁盘 dist）
+访问入口（令牌即访问凭据，可 Ctrl+C 停止）:
+  http://127.0.0.1:8080/?token=1a2b3c4d5e6f7890
+  http://192.168.x.x:8080/?token=1a2b3c4d5e6f7890
+```
+
+- 每次启动**自动生成随机 16 位 hex 访问令牌**并印在 URL 里；浏览器直接打开打印的
+  地址即用。不带 token 的请求一律 401（也可用 `--token <你的令牌>` 固定）；同一令牌
+  支持 `?token=`（默认）与 `Authorization: Bearer` 两种携带方式。
+- 可选参数：`--port`（默认 8080）、`--home`（数据目录，默认 `~/.flowscope`）、
+  `--token`（固定令牌）、`--workflow-dir`（文件夹工作流默认目录）。
+- agent 注册与下方 1.1 第 2 步完全相同：编辑 `<home>/agents.toml`；接入 ZCode 就把
+  桥四件套 env（`ZCODE_NODE`/`ZCODE_BIN`/`ZCODE_ACP_BRIDGE`/`ZCODE_ACP_CWD`）指向
+  本机路径后重启，首次启动会自动生成 `zcode` 条目。
+
+### flowscope-desktop.exe（桌面窗口版）
+
+`target\release\flowscope-desktop.exe` 拷到目标机**双击**即可：进程内嵌引擎 + 嵌入 UI，
+数据同样落在 `~/.flowscope/`。首次启动自动注册演示 agent（mock/bad-mock）；接入
+ZCode 的 agents.toml / env 配置同上。注意窗口依赖系统 WebView2 运行时（缺失时窗口
+创建失败，装 Evergreen Runtime 即可）。
+
+## 1.5 常见问题
 
 | 现象 | 原因与处理 |
 |---|---|
@@ -323,13 +369,13 @@ core / mock-agent / 桌面壳三件套、ACP v1 会话层、工作流 DSL 与调
 
 ## M2 计划（节选，剩余）
 
-独立服务器 + Web 部署（远程承载引擎）、运行回放与瀑布时间线、渲染后 prompt 回显、
-agent 健康探活、桌面安装包。完整清单见现状文档 §8（docs/superpowers/specs/2026-10-02-flowscope-current-state.md）。
+运行回放与瀑布时间线、渲染后 prompt 回显、agent 健康探活、桌面安装包。完整清单见现状文档 §8（docs/superpowers/specs/2026-10-02-flowscope-current-state.md）。
+（**独立服务器已交付**：`flowscope-server.exe` 单文件分发——嵌入 UI、随机访问令牌、CRT 静态链接，见 1.4。）
 
 ## 已知限制（当前）
 
 - **渲染后 prompt 不回显**：抽屉「输入输出」tab 的输入侧为占位（M2）。
 - **agent 无健康探测**：agent 配置错误要等运行时才暴露。
-- **桌面版未出安装包**：需以命令/可执行文件方式启动。
-- **单用户本地工具**：无鉴权 / 多租户。
+- **桌面版未出安装包**：需以命令/可执行文件方式启动（release 单文件可直接双击，见 1.4）。
+- **单用户本地工具**：dev/桌面模式无鉴权；独立服务器用单个随机令牌（无多用户/多租户）。
 - **取消语义局限**：仅支持本进程内取消；重启后遗留运行标记 `interrupted`。

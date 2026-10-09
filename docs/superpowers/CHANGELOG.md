@@ -2,6 +2,15 @@
 
 按时间序记录各次交付；细节见对应计划/报告与 `specs/2026-10-02-flowscope-current-state.md`（现状权威文档）。
 
+## 2026-10-09 · 独立二进制分发：嵌入 UI + 访问令牌 + flowscope-server（T1 `feat(core): 前端资源嵌入与访问令牌中间件` + T2 `feat: flowscope-server 独立服务器 bin 与 release 分发构建（嵌入 UI/随机令牌/静态 CRT）`）
+- **前端资源嵌入（T1）**：`crates/flowscope-core/build.rs`——dist 缺失时写占位 index.html 防编译失败；`src/assets.rs` rust-embed 编译期嵌 `frontend/dist`（`debug-embed` 使 dev/test 与 release 同路径），`serve_embedded` MIME 小表（按最后段扩展名）+ `..` 拒绝；`router_with_static` 的 `dist=None` 语义=嵌入兜底（`/` SPA 回退、`/assets/*` 精确匹配），dev bin 传 `Some(dist)` 磁盘优先不变。
+- **访问令牌（T1）**：`AppState`/router 增 `token: Option<Arc<str>>`——Some 时所有请求（API+静态）须 `Authorization: Bearer` 或 `?token=`，否则 401 `{error:"unauthorized"}`；None 完全透传（桌面/dev 零影响）。
+- **flowscope-server bin（T2）**：`crates/flowscope-core/src/bin/server.rs`——参数 `--port`（8080）/`--home`（~/.flowscope）/`--token`（缺省自动 16 hex 随机生成并打印，std-only 熵源）/`--workflow-dir`；mock agent 探测 exe 同目录 → target/debug；启动打印本机全部 IPv4 的 `http://<ip>:<port>/?token=<t>` 逐行。
+- **桌面壳（T2）**：`main.rs` 改传 `dist=None`（嵌入 UI；窗口/端口逻辑不变）。
+- **CRT 静态链接（T2）**：仓库根 `.cargo/config.toml` 全局 `+crt-static`（release+dev 全量重编译一次）——desktop/tauri 链接正常，未走 per-bin RUSTFLAGS 退化路线；release exe 导入表仅系统 DLL（无 VCRUNTIME140）。
+- **release 冒烟**：干净临时目录仅两 exe（server 14.8MB + mock-agent 0.6MB）跑 `--port 39330`——无 token `/api/agents` 401、`/?token=` 200 含 FlowScope、`/api/agents?token=` 200 JSON、POST 单节点 mock 工作流启动运行至 `finished`（节点产物可取）；desktop release exe 22.6MB 存在性检查（GUI 未跑）。
+- 测试：cargo 59（+2：嵌入可达/..拒绝、token 401/双携带方式/透传回归）/ vitest 158 / e2e 4/4（specs 未动）。
+
 ## 2026-10-08 · 保存到文件夹通用化：另存派生 + 文件夹页派生（`feat(frontend): 保存到文件夹通用化——另存到文件夹（目录/文件名/标记派生）` + `feat(frontend): 文件夹页派生——从既有工作流快速另存新文件（含文档同步）`）
 - 编辑器：「**保存到文件夹**」常驻任何工作流工具栏（此前仅文件夹 origin 入口显示）——有 effectiveOrigin（location.state origin 或本地 savedOrigin）一键写回；无则弹 `fs-folderdlg` 对话框（目录预填 localStorage `fs-workflow-dir` → 后端默认目录，文件名=model.name 合法化补 `.yaml`，缺后缀保存时自动补）。旁新增同级「**另存到文件夹…**」（一等 Save As，常驻、总弹对话框，预填 effectiveOrigin ?? 同上默认）。
 - 对话框「**标记**」字段（初值=画布 tags join）：与画布 tags 不同时对 `toYaml()` 结果做 `setYamlTags` 文档手术再保存——**文件派生 tags、画布 model 不动**；成功更新 savedOrigin（主按钮后续一键直达新路径）+ toast + 失效 `['folder-workflows']`，失败对话框保留就地显错；预检（目录/文件名非空、无 `/` `\`）不发请求。

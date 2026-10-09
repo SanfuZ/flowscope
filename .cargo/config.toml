@@ -1,0 +1,5 @@
+# 静态链接 CRT（Windows：/MT）——分发 exe 不再依赖 VC++ 运行库安装。
+# 影响全部 crate 的 dev 与 release 构建，首次需全量重编译；若个别 bin
+# 链接异常，可改为按 bin 设置 RUSTFLAGS（见 README 独立分发小节）。
+[build]
+rustflags = ["-C", "target-feature=+crt-static"]

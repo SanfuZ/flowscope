@@ -28,6 +28,11 @@ thiserror = { workspace = true }
 # 前端 dist 嵌入（单文件分发；debug-embed 使 dev/测试同样走编译期嵌入路径）
 rust-embed = { version = "8", features = ["debug-embed"] }
 
+# 独立无头服务器（单文件分发：嵌入 UI + 随机访问令牌）
+[[bin]]
+name = "flowscope-server"
+path = "src/bin/server.rs"
+
 [dev-dependencies]
 # Integration tests spawn the Task-7 mock agent binary; assert_cmd locates it
 # (the test helper builds it first — assert_cmd 2.x no longer builds).

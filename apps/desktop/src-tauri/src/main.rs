@@ -2,7 +2,8 @@
 //!
 //! 架构：桌面进程内直接组装 flowscope-core 后端（复用
 //! [`flowscope_core::api::bootstrap`]——建 SQLite/EventHub/AgentRegistry/Engine，
-//! 并托管 `frontend/dist` 静态资源），绑定 `127.0.0.1:<随机端口>`，随后创建
+//! 并托管静态资源——`dist=None` 走编译期嵌入 UI，见
+//! [`flowscope_core::assets`]），绑定 `127.0.0.1:<随机端口>`，随后创建
 //! WebView 窗口直连该地址。无外部进程、无跨进程通信。
 //!
 //! - home：`~/.flowscope`（库、agents.toml、脚本均落在此）。
@@ -78,16 +79,14 @@ fn main() {
              cargo build -p flowscope-mock-agent）；首启不生成 agents.toml"
         );
     }
-    let dist = root.join("frontend").join("dist");
-    let dist = dist.is_dir().then_some(dist);
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("创建 tokio runtime 失败");
 
     let port = rt.block_on(async {
-        let (_state, router) = bootstrap(&home, mock_agent.clone(), dist.clone(), None)
+        // dist=None：静态请求一律走编译期嵌入资源（分发形态无磁盘 dist 可言）
+        let (_state, router) = bootstrap(&home, mock_agent.clone(), None, None)
             .await
             .expect("bootstrap 组装失败");
 
