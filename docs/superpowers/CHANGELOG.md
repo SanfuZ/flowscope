@@ -2,6 +2,12 @@
 
 按时间序记录各次交付；细节见对应计划/报告与 `specs/2026-10-02-flowscope-current-state.md`（现状权威文档）。
 
+## 2026-10-09 · fix: 访问令牌仅保护 /api——静态资源放行（`fix(core): 访问令牌仅保护 /api——静态资源放行（修复浏览器白屏）`）
+- **缺陷**：令牌中间件覆盖全部路径——浏览器经 `/?token=` 拿到 HTML 后，`<script>/<link>` 标签裸取 `/assets/index-*.js|css`（无法携带凭据）→ 401 → 白屏。curl 冒烟只测了 `/` 与 `/api`，未暴露。
+- **修复**：`auth_middleware` 开头路径分流——非 `/api` 一律放行（`/`、`/assets/*`、favicon、SPA 回退；静态资源不含密钥）；`/api`（全部方法）仍须 Bearer 或 `?token=`，401 body 不变；token=None 全透传不变。页面内 API 调用由前端 client 统一附加 `?token=`。
+- **测试矩阵改写**：`GET /`（无 token）→ 200（页面公开）；新增回归——**无 token GET 真实 `.js` 嵌入键 → 200**（正是浏览器白屏场景）；`/api` 无凭据 401、错误/空 token 401、`?token=`/Bearer 放行均保持。
+- 验证：cargo 59 全绿 + release exe 复冒烟（`/?token=` 200 → html 内 js 资源**不带 token** 200 → `/api/agents` 无 token 401 → 带 token 200）+ e2e 4/4；文档同步（现状文档 §1/§2、README 1.4）。
+
 ## 2026-10-09 · 独立二进制分发：嵌入 UI + 访问令牌 + flowscope-server（T1 `feat(core): 前端资源嵌入与访问令牌中间件` + T2 `feat: flowscope-server 独立服务器 bin 与 release 分发构建（嵌入 UI/随机令牌/静态 CRT）`）
 - **前端资源嵌入（T1）**：`crates/flowscope-core/build.rs`——dist 缺失时写占位 index.html 防编译失败；`src/assets.rs` rust-embed 编译期嵌 `frontend/dist`（`debug-embed` 使 dev/test 与 release 同路径），`serve_embedded` MIME 小表（按最后段扩展名）+ `..` 拒绝；`router_with_static` 的 `dist=None` 语义=嵌入兜底（`/` SPA 回退、`/assets/*` 精确匹配），dev bin 传 `Some(dist)` 磁盘优先不变。
 - **访问令牌（T1）**：`AppState`/router 增 `token: Option<Arc<str>>`——Some 时所有请求（API+静态）须 `Authorization: Bearer` 或 `?token=`，否则 401 `{error:"unauthorized"}`；None 完全透传（桌面/dev 零影响）。

@@ -13,7 +13,7 @@
 | 事件溯源 | SQLite（WAL）单文件 `~/.flowscope/flowscope.db`；表 workflows/runs/events/sessions/artifacts；事件只追加，节点状态=事件投影；每 run 内 seq 严格递增 |
 | 实时通道 | SSE `GET /api/runs/:id/events?after=<seq>`（Last-Event-ID 等价）；hub=broadcast(1024)+ring(4096)；**Lagged → 断流促重连回补**；EventSource 自动重连（1s→10s 退避） |
 | 桌面/部署 | Tauri 2 壳（进程内嵌引擎，随机端口，`FLOWSCOPE_DESKTOP_PORT` 可固定，**静态资源走编译期嵌入**）；dev 启动器 `bin/dev`（39271，磁盘 dist 优先）；**独立无头服务器 `bin/server`（flowscope-server.exe）**——前端 UI 嵌入 exe、随机访问令牌、打印本机 IPv4 入口 URL；bundle.active=false（未出安装包） |
-| 安全边界 | 单人本地工具；dev/桌面无 token 完全透传；**分发形态（flowscope-server）恒启用随机令牌**——所有请求须 `Authorization: Bearer <t>` 或 `?token=<t>`，否则 401（见 §2）；fs 回调白名单=canonicalize 后 cwd 比较；文件夹 API 列表只读 + save 端点限定目录内 `.yaml/.yml` 文件名（防穿越） |
+| 安全边界 | 单人本地工具；dev/桌面无 token 完全透传；**分发形态（flowscope-server）恒启用随机令牌，仅保护 `/api`**——`/api` 请求须 `Authorization: Bearer <t>` 或 `?token=<t>`，否则 401；**静态资源（页面/`/assets/*`）免凭据放行**（`<script>/<link>` 无法带凭据，拦截即白屏，见 §2）；fs 回调白名单=canonicalize 后 cwd 比较；文件夹 API 列表只读 + save 端点限定目录内 `.yaml/.yml` 文件名（防穿越） |
 
 ## 2. 后端 API（前缀 /api，同源）
 
@@ -31,7 +31,7 @@
 | `POST /fs/workflows/save` | **保存到文件夹**（body `{dir, file, yaml}`）：dir 存在且为目录、file 无路径分隔符且 `.yaml/.yml` 结尾（防穿越）、yaml 可 parse（三层 400 校验）→ 覆盖写 `dir/file`，响应 `{dir, file, bytes}` |
 
 - 默认 agents.toml / 工作流文件夹种子：bootstrap 首启生成（`~/.flowscope/agents.toml`、`~/.flowscope/workflows/hello-zcode.yaml`——**已存在的文件不覆盖**，改默认模板需删文件重启）。
-- **访问令牌**：`bootstrap` 的 `token=Some(t)` 时（flowscope-server 分发形态恒启用；dev/桌面传 None），**所有**请求（`/api/*` 与静态资源）须带 `Authorization: Bearer <t>` **或** `?token=<t>`（SSE EventSource 不支持自定义头的场景），否则 401 `{error:"unauthorized"}`；token=None 时完全透传，零影响。
+- **访问令牌**：`bootstrap` 的 `token=Some(t)` 时（flowscope-server 分发形态恒启用；dev/桌面传 None），**`/api` 路径**（全部方法）须带 `Authorization: Bearer <t>` **或** `?token=<t>`（SSE EventSource 不支持自定义头的场景），否则 401 `{error:"unauthorized"}`；**静态资源（`/`、`/assets/*`、favicon、SPA 回退）免凭据放行**——前端页面本身不含密钥，且 `<script>/<link>` 标签请求无法携带 token（拦截会把已鉴权页面打成白屏；页面内 API 调用经 client 统一附加 `?token=`）；token=None 时完全透传，零影响。
 - 可配置 env：`FLOWSCOPE_WORKFLOW_DIR`（文件夹页默认目录）、`ZCODE_NODE`/`ZCODE_BIN`/`ZCODE_ACP_BRIDGE`/`ZCODE_ACP_CWD`（ZCode 桥路径覆盖，见 §4）、`FLOWSCOPE_DESKTOP_PORT`、`RUST_LOG`。
 
 ## 3. 事件契约（payload 键名 camelCase，前后端共用）

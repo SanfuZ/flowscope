@@ -52,9 +52,11 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub hub: Arc<EventHub>,
     pub registry: Arc<AgentRegistry>,
-    /// 访问令牌（`Some` 时所有请求须 `Authorization: Bearer <t>` 或
-    /// `?token=<t>`，否则 401；`None` 完全透传——桌面/dev 模式零影响）。
-    /// 服务器 bin（`bin/server.rs`）缺省自动生成随机 hex 并打印。
+    /// 访问令牌（`Some` 时**`/api` 路径**须 `Authorization: Bearer <t>` 或
+    /// `?token=<t>`，否则 401；静态资源（`/`、`/assets/*`、SPA 回退）放行——
+    /// `<script>/<link>` 标签无法携带凭据，拦截即白屏；`None` 完全透传——
+    /// 桌面/dev 模式零影响）。服务器 bin（`bin/server.rs`）缺省自动生成随机
+    /// hex 并打印。
     pub token: Option<Arc<str>>,
 }
 
@@ -71,7 +73,7 @@ pub fn router(state: AppState) -> Router {
 ///   ——单文件分发模式（server bin / 桌面壳）。
 ///
 /// `/api` 显式路由优先于静态服务。`state.token` 为 `Some` 时套访问令牌
-/// 中间件（豁免 NOTHING：静态资源与 `/api` 一视同仁）。
+/// 中间件（**仅保护 `/api`**：静态资源不含密钥且标签请求无法带凭据，放行）。
 pub fn router_with_static(state: AppState, dist: Option<PathBuf>) -> Router {
     let api = Router::new()
         .route("/workflows", get(list_workflows).post(create_workflow))
@@ -129,10 +131,15 @@ fn last_segment(path: &str) -> &str {
     path.trim_end_matches('/').rsplit('/').next().unwrap_or("")
 }
 
-/// 访问令牌中间件：`Authorization: Bearer <t>` **或** `?token=<t>`（SSE
-/// EventSource 无法带自定义头，走 query）二者其一匹配即放行，否则
-/// 401 `{"error":"unauthorized"}`。豁免 NOTHING。
+/// 访问令牌中间件：**仅 `/api` 路径**要求凭据——`Authorization: Bearer <t>`
+/// 或 `?token=<t>`（SSE EventSource 无法带自定义头，走 query）二者其一匹配
+/// 即放行，否则 401 `{"error":"unauthorized"}`。非 `/api`（`/`、`/assets/*`、
+/// favicon、SPA 回退）一律放行：静态资源不含密钥，且 `<script>/<link>` 标签
+/// 请求无法携带 token——拦截会把已通过 `/?token=` 鉴权的页面打成白屏。
 async fn auth_middleware(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    if !req.uri().path().starts_with("/api") {
+        return next.run(req).await;
+    }
     let expected = st.token.as_deref().unwrap_or_default();
     let provided = req
         .headers()
@@ -168,8 +175,8 @@ fn query_token(query: Option<&str>) -> Option<String> {
 /// AgentRegistry（读 home/agents.toml；缺失且给了 mock agent 时写默认配置
 /// 并加载）、Engine（AcpExecutor）+ 标记遗留 running run 为 interrupted。
 ///
-/// `token` 为 `Some` 时全站要求凭据（见 [`AppState::token`]）；dist 语义见
-/// [`router_with_static`]。
+/// `token` 为 `Some` 时 `/api` 要求凭据（静态资源放行，见 [`AppState::token`]）；
+/// dist 语义见 [`router_with_static`]。
 ///
 /// T15（Tauri main）、`bin/dev.rs` 与 `bin/server.rs` 共用本入口；返回的
 /// Router 已含静态托管。
@@ -1957,9 +1964,11 @@ mod tests {
         assert_eq!(body.as_array().unwrap().len(), 0);
     }
 
-    /// 令牌中间件矩阵：无 token 完全透传（回归）；设 token 后——无凭据 401
-    /// （豁免 NOTHING，静态资源同拦）、错误 token 401、空 token 参数 401、
-    /// `?token=` 放行（SSE EventSource 路径）、`Authorization: Bearer` 放行。
+    /// 令牌中间件矩阵：无 token 完全透传（回归）；设 token 后——`/api` 无凭据
+    /// 401、错误/空 token 401、`?token=` 放行（SSE EventSource 路径）、
+    /// `Authorization: Bearer` 放行；**静态资源一律免凭据放行**（`/` 与真实
+    /// `.js` 资源不带 token 可达——浏览器 `<script>/<link>` 无法带凭据，
+    /// 拦截即白屏，回归用）。
     #[tokio::test]
     async fn token_middleware_matrix() {
         // (0) 无 token：完全透传
@@ -1969,12 +1978,28 @@ mod tests {
 
         let app = router_with_static(tokened_state("sekret123"), None);
 
-        // (1) 无凭据 → 401 {"error":"unauthorized"}；静态资源同拦（豁免 NOTHING）
+        // (1) /api 无凭据 → 401 {"error":"unauthorized"}
         let (status, body) = req_json(&app, get_req("/api/agents".into())).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
         assert_eq!(body["error"], "unauthorized");
+
+        // (1a) 静态资源免凭据：页面本身公开（无 token → 200）
         let res = app.clone().oneshot(get_req("/".into())).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "静态资源不豁免");
+        assert_eq!(res.status(), StatusCode::OK, "页面公开，不带 token 亦可达");
+        assert!(body_string(res).await.contains("FlowScope"));
+
+        // (1b) 回归（浏览器白屏场景）：<script> 裸取真实 .js 资源，无法带
+        // token → 必须 200（此前全站拦截时此请求 401 → 页面空白）
+        let js_key = crate::assets::embedded_keys()
+            .into_iter()
+            .find(|k| k.ends_with(".js"))
+            .expect("dist 构建产物应含 .js 资源");
+        let res = app
+            .clone()
+            .oneshot(get_req(format!("/{js_key}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "asset: {js_key}");
 
         // (2) 错误 token → 401
         let (status, body) = req_json(&app, get_req("/api/agents?token=wrong".into())).await;
@@ -1988,7 +2013,7 @@ mod tests {
         let (status, body) = req_json(&app, get_req("/api/agents?token=sekret123".into())).await;
         assert_eq!(status, StatusCode::OK, "{body}");
 
-        // (5) Bearer 头正确 → 200（静态资源同样放行）
+        // (5) Bearer 头正确 → 200
         let (status, body) = req_json(
             &app,
             Request::get("/api/agents")
@@ -1998,18 +2023,6 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let res = app
-            .clone()
-            .oneshot(
-                Request::get("/")
-                    .header("authorization", "Bearer sekret123")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        assert!(body_string(res).await.contains("FlowScope"));
 
         // (6) token 与凭据错误组合仍 401（Bearer 优先于 query，均需命中）
         let (status, _) = req_json(

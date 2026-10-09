@@ -247,8 +247,10 @@ FlowScope server 已启动（前端 UI 内嵌，无需磁盘 dist）
 ```
 
 - 每次启动**自动生成随机 16 位 hex 访问令牌**并印在 URL 里；浏览器直接打开打印的
-  地址即用。不带 token 的请求一律 401（也可用 `--token <你的令牌>` 固定）；同一令牌
-  支持 `?token=`（默认）与 `Authorization: Bearer` 两种携带方式。
+  地址即用。**令牌保护的是 `/api` 数据接口**：不带 token 调 API 一律 401（也可用
+  `--token <你的令牌>` 固定）；页面与静态资源本身公开（浏览器 `<script>/<link>` 无法
+  携带凭据），页面内的 API 调用会自动附带 `?token=`。同一令牌支持 `?token=`（默认）
+  与 `Authorization: Bearer` 两种携带方式。
 - 可选参数：`--port`（默认 8080）、`--home`（数据目录，默认 `~/.flowscope`）、
   `--token`（固定令牌）、`--workflow-dir`（文件夹工作流默认目录）。
 - agent 注册与下方 1.1 第 2 步完全相同：编辑 `<home>/agents.toml`；接入 ZCode 就把
