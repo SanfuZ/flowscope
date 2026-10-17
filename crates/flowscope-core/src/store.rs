@@ -146,6 +146,30 @@ impl Store {
         Ok(true)
     }
 
+    /// 存储保留期：删除 `started_at` 早于 `days` 天的 runs 及其级联痕迹
+    /// （events/artifacts/sessions，与 [`Store::delete_workflow`] 同一 SQL 形态）。
+    /// `days == 0` 视为禁用（不删任何东西，返回 0）。返回删除的 run 行数。
+    pub fn prune_runs_before_days(&self, days: u32) -> Result<usize, StoreError> {
+        if days == 0 {
+            return Ok(0);
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let cutoff = format!("-{days} days");
+        for sql in [
+            "DELETE FROM events WHERE run_id IN (SELECT id FROM runs WHERE started_at < datetime('now', ?1))",
+            "DELETE FROM artifacts WHERE run_id IN (SELECT id FROM runs WHERE started_at < datetime('now', ?1))",
+            "DELETE FROM sessions WHERE run_id IN (SELECT id FROM runs WHERE started_at < datetime('now', ?1))",
+            "DELETE FROM runs WHERE started_at < datetime('now', ?1)",
+        ] {
+            tx.execute(sql, params![cutoff])?;
+        }
+        // 最后一条语句即 runs 的删除，changes() 即删除的 run 行数
+        let pruned = tx.changes() as usize;
+        tx.commit()?;
+        Ok(pruned)
+    }
+
     pub fn create_run(
         &self,
         workflow_id: &str,
@@ -470,6 +494,56 @@ mod tests {
             s.get_workflow(&keep).unwrap().is_some(),
             "无关工作流不受影响"
         );
+    }
+
+    #[test]
+    fn prune_runs_before_days_cascades_only_old_runs() {
+        let s = Store::open_in_memory().unwrap();
+        let wf = s.upsert_workflow("demo", 1, "x").unwrap();
+        // 直接 SQL 插入显式 started_at 的新旧两条 run
+        let old = "run_old".to_string();
+        let fresh = "run_new".to_string();
+        {
+            let conn = s.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO runs(id, workflow_id, params_json, started_at) \
+                 VALUES(?1,?2,'{}', datetime('now','-10 days'))",
+                params![old, &wf],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO runs(id, workflow_id, params_json, started_at) \
+                 VALUES(?1,?2,'{}', datetime('now'))",
+                params![fresh, &wf],
+            )
+            .unwrap();
+        }
+        s.append_events(&[ev(1, &old), ev(1, &fresh)]).unwrap();
+        s.put_artifact(&old, "n1", "output", "application/json", "{}")
+            .unwrap();
+
+        // days=0 禁用：不删任何东西
+        assert_eq!(s.prune_runs_before_days(0).unwrap(), 0);
+
+        // 保留 7 天：只删旧 run，且级联删事件/产物；新 run 原样保留
+        assert_eq!(s.prune_runs_before_days(7).unwrap(), 1);
+        assert!(s.get_run(&old).unwrap().is_none(), "旧 run 已删");
+        assert!(
+            s.events_after(&old, 0, 100).unwrap().is_empty(),
+            "旧 run 事件已级联删除"
+        );
+        assert!(
+            s.get_artifact(&old, "n1", "output").unwrap().is_none(),
+            "旧 run 产物已级联删除"
+        );
+        assert!(s.get_run(&fresh).unwrap().is_some(), "新 run 保留");
+        assert_eq!(
+            s.events_after(&fresh, 0, 100).unwrap().len(),
+            1,
+            "新 run 事件保留"
+        );
+        // 再跑一次幂等：无可删返回 0
+        assert_eq!(s.prune_runs_before_days(7).unwrap(), 0);
     }
 
     #[test]

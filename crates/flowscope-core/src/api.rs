@@ -205,6 +205,22 @@ pub async fn bootstrap(
         Store::open(&home.join("flowscope.db"))
             .map_err(|e| ApiError::Msg(format!("打开 store 失败: {e}")))?,
     );
+    // 存储保留期（避免 SQLite 无限增长）：env `FLOWSCOPE_RETENTION_DAYS` 为正整数
+    // 时，启动即删除 started_at 早于 N 天的运行（含事件/产物/会话级联，见
+    // [`Store::prune_runs_before_days`]）；未设置或 0 = 禁用（永久保留）。
+    match std::env::var("FLOWSCOPE_RETENTION_DAYS") {
+        Ok(raw) => match raw.trim().parse::<u32>() {
+            Ok(days) if days > 0 => match store.prune_runs_before_days(days) {
+                Ok(n) => tracing::info!(
+                    "存储保留期：已清理 {days} 天前的 {n} 条运行（含级联事件/产物/会话）"
+                ),
+                Err(e) => tracing::warn!("存储保留期清理失败（忽略，继续启动）: {e}"),
+            },
+            Ok(_) => {}
+            Err(_) => tracing::warn!("忽略非法 FLOWSCOPE_RETENTION_DAYS={raw:?}（须为非负整数）"),
+        },
+        Err(_) => {}
+    }
     let hub = Arc::new(EventHub::new());
 
     let agents_toml = home.join("agents.toml");

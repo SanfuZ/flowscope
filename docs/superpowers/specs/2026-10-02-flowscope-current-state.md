@@ -2,14 +2,14 @@
 
 - 日期：2026-10-02 ｜ 对应 main：`18142f0` ｜ 远端：https://github.com/SanfuZ/flowscope（私有）
 - 定位：**后续整体修改的单一权威参考**。历史设计（M1 spec）与各里程碑计划保留在原处作记录；本文档描述系统**当前实际行为**。改动落地后请同步更新本文档。
-- 测试基线：cargo **59**（57 lib + 2 e2e）· vitest **158** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
+- 测试基线：cargo **65**（63 lib + 2 e2e）· vitest **158** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
 
 ## 1. 功能总览
 
 | 子系统 | 现状 |
 |---|---|
 | ACP 接入 | 官方 `agent-client-protocol` crate 2.2（Client 角色，v1 稳定面）；agent 经 `agents.toml` 注册（command/cwd/env/model/permission_default）；内置演示 agent `mock`/`bad-mock`；**ZCode 经 zcode-acp-server 桥自动注册**（见 §4） |
-| 工作流引擎 | YAML DSL（meta（含可选 `tags` 标记，编排忽略）/params/on_node_failure/nodes[id,agent,prompt,output_schema,retry,timeout_ms]/edges[from,to,when]）；Kahn 拓扑+条件边（==/contains/and）+层内并行（Semaphore 4）；重试退避/超时/取消/跳过级联；minijinja Strict 模板（`{{ params.x }}`、`{{ nodes.<id>.output.<path> }}`）；output_schema 结构化提取 |
+| 工作流引擎 | YAML DSL（meta（含可选 `tags` 标记，编排忽略）/params/on_node_failure/nodes[id,agent,prompt,output_schema,retry,timeout_ms]/edges[from,to,when]）；Kahn 拓扑+条件边（==/contains/and）+层内并行（Semaphore 4）；重试退避/超时/取消/跳过级联；minijinja Strict 模板（`{{ params.x }}`、`{{ nodes.<id>.output.<path> }}`；**非 ASCII/连字符等非法标识符的点访问渲染前自动转下标，见 §4/§5**）；output_schema 结构化提取 |
 | 事件溯源 | SQLite（WAL）单文件 `~/.flowscope/flowscope.db`；表 workflows/runs/events/sessions/artifacts；事件只追加，节点状态=事件投影；每 run 内 seq 严格递增 |
 | 实时通道 | SSE `GET /api/runs/:id/events?after=<seq>`（Last-Event-ID 等价）；hub=broadcast(1024)+ring(4096)；**Lagged → 断流促重连回补**；EventSource 自动重连（1s→10s 退避） |
 | 桌面/部署 | Tauri 2 壳（进程内嵌引擎，随机端口，`FLOWSCOPE_DESKTOP_PORT` 可固定，**静态资源走编译期嵌入**）；dev 启动器 `bin/dev`（39271，磁盘 dist 优先）；**独立无头服务器 `bin/server`（flowscope-server.exe）**——前端 UI 嵌入 exe、随机访问令牌、打印本机 IPv4 入口 URL；bundle.active=false（未出安装包） |
@@ -32,7 +32,7 @@
 
 - 默认 agents.toml / 工作流文件夹种子：bootstrap 首启生成（`~/.flowscope/agents.toml`、`~/.flowscope/workflows/hello-zcode.yaml`——**已存在的文件不覆盖**，改默认模板需删文件重启）。
 - **访问令牌**：`bootstrap` 的 `token=Some(t)` 时（flowscope-server 分发形态恒启用；dev/桌面传 None），**`/api` 路径**（全部方法）须带 `Authorization: Bearer <t>` **或** `?token=<t>`（SSE EventSource 不支持自定义头的场景），否则 401 `{error:"unauthorized"}`；**静态资源（`/`、`/assets/*`、favicon、SPA 回退）免凭据放行**——前端页面本身不含密钥，且 `<script>/<link>` 标签请求无法携带 token（拦截会把已鉴权页面打成白屏；页面内 API 调用经 client 统一附加 `?token=`）；token=None 时完全透传，零影响。
-- 可配置 env：`FLOWSCOPE_WORKFLOW_DIR`（文件夹页默认目录）、`ZCODE_NODE`/`ZCODE_BIN`/`ZCODE_ACP_BRIDGE`/`ZCODE_ACP_CWD`（ZCode 桥路径覆盖，见 §4）、`FLOWSCOPE_DESKTOP_PORT`、`RUST_LOG`。
+- 可配置 env：`FLOWSCOPE_WORKFLOW_DIR`（文件夹页默认目录）、`FLOWSCOPE_RETENTION_DAYS`（存储保留期天数——启动时删除 `started_at` 早于 N 天的运行并**级联删事件/产物/会话**，正整数生效、0/未设=永久保留、非法值 warn 忽略，见 `store.prune_runs_before_days`）、`ZCODE_NODE`/`ZCODE_BIN`/`ZCODE_ACP_BRIDGE`/`ZCODE_ACP_CWD`（ZCode 桥路径覆盖，见 §4）、`FLOWSCOPE_DESKTOP_PORT`、`RUST_LOG`。
 
 ## 3. 事件契约（payload 键名 camelCase，前后端共用）
 
@@ -57,6 +57,7 @@ StopReason 5 值映射（acp→NodeFailure）：end_turn→Ok；cancelled→Proc
 - bootstrap 在桥与 node≥22 文件存在时自动写 agents.toml `zcode` 条目：command=[ZCODE_NODE, 桥cli.js, server]，env 四件套 **`ZCODE_NODE`（≥22 node）/`ZCODE_BIN`（zcode.cjs——缺失报 "zcode not found"）/`ZCODE_ACP_RUNTIME=node`/`ZCODE_ACP_CWD`（默认用户主目录）**，`model='builtin:bigmodel-coding-plan\GLM-5.3-Flash'`（TOML 字面单引号，单反斜杠）。
 - model 逻辑：session/new 后、首条 prompt 前，`ActiveSession::connection().send_request_to(Agent, v1::SetSessionConfigOptionRequest)` 发送；cfg.model 缺省时从 config_options 选第一个不含 "start-plan" 的项（**start-plan 无头必败**）；发送失败 warn-and-continue。
 - 已知行为：真桥拒绝**空 prompt**（"empty prompt"→重试耗尽失败）；usage_update 未单独事件化（正文里可见）；无 `session/load`（节点内续问为待办）。
+- 非 ASCII 节点 ID/参数名：渲染器自动将点访问转换为下标形式（中文 ID 可直接用点语法书写，如 `{{ nodes.取数.output.数据 }}`、`{{ params.主题 }}`）——minijinja 点语法只认 ASCII 标识符，`render_prompt` 渲染前经 `render::preprocess_non_ascii_attributes` 把表达式内非法标识符段改写为等价 `["…"]`；引号字符串/既有下标/普通文本/`{#注释#}` 不动，纯 ASCII 模板逐字节不变。
 
 ## 5. 前端（React 18 + Vite 6 + TS + ReactFlow 12 + zustand 5 + yaml@2）
 
@@ -74,6 +75,7 @@ StopReason 5 值映射（acp→NodeFailure）：end_turn→Ok；cancelled→Proc
 - `runStore`：NodeView{status,message,reasoning[],tools[],plan{entries},logs[](cap500),prompt?,error}；applyEvent 纯函数（唯一写入点）；`seq<=lastSeq` 丢弃防重放。
 - `editorStore`：文档模型（唯一事实源）+ positions（视图态不持久）+ 快照撤销重做（cap 50）+ `newNodeDefaults{retryMax:2,backoffMs:3000,timeoutMs:600000}`（编辑器偏好：不进历史/不置脏；0=省略字段）+ updateModelMeta（name/version/**tags**/params/on_node_failure）；**新建种子节点自动换首个非演示 agent**（dirty 或导入时跳过）。
 - 校验 `lib/validate.ts` 镜像后端规则（id 唯一/边引用/Kahn 环/when 语法）；保存门禁 + 面板就地提示。
+- Prompt 模板书写：**非 ASCII 节点 ID/参数名：渲染器自动将点访问转换为下标形式（中文 ID 可直接用点语法书写）**——节点属性面板填 `{{ nodes.取数.output.数据 }}`、`{{ params.主题 }}` 即可（后端渲染前预处理改写为 `["…"]` 下标；连字符 id 同样自动兼容；引号字符串与普通文本不受影响）。
 - 主题：深色可观测风，全变量化（styles.css `:root`）；UI 文案中文；无 UI 组件库。
 - 入口按钮/选择器冻结面：e2e 依赖 `palette-add-zcode`（build-via-canvas 辅助函数显式设 step1=mock——真桥拒空 prompt）、`.fs-node--<status>`、`.fs-monitor`、`drawer-*`、`data-testid="run-status"`、按钮「保存」「启动运行」「在编辑器打开」。
 

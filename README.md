@@ -253,6 +253,9 @@ FlowScope server 已启动（前端 UI 内嵌，无需磁盘 dist）
   与 `Authorization: Bearer` 两种携带方式。
 - 可选参数：`--port`（默认 8080）、`--home`（数据目录，默认 `~/.flowscope`）、
   `--token`（固定令牌）、`--workflow-dir`（文件夹工作流默认目录）。
+- 存储保留期（可选）：环境变量 `FLOWSCOPE_RETENTION_DAYS=<天数>`——启动时自动清理
+  超过该天数的运行记录（含事件/产物，级联删除），避免 `flowscope.db` 无限增长；
+  未设置或 0 = 永久保留（桌面/浏览器方式同样生效）。
 - agent 注册与下方 1.1 第 2 步完全相同：编辑 `<home>/agents.toml`；接入 ZCode 就把
   桥四件套 env（`ZCODE_NODE`/`ZCODE_BIN`/`ZCODE_ACP_BRIDGE`/`ZCODE_ACP_CWD`）指向
   本机路径后重启，首次启动会自动生成 `zcode` 条目。

@@ -2,6 +2,11 @@
 
 按时间序记录各次交付；细节见对应计划/报告与 `specs/2026-10-02-flowscope-current-state.md`（现状权威文档）。
 
+## 2026-10-18 · 中文模板修复 + 存储保留期（`fix(core): 渲染器兼容非 ASCII 标识符（中文节点 ID/参数名点访问自动转下标）` + `feat(core): FLOWSCOPE_RETENTION_DAYS 存储保留期（含级联清理）`）
+- **渲染器兼容非 ASCII 标识符（fix）**：minijinja 点语法只认 ASCII 标识符——中文节点 ID/参数名（`{{ nodes.取数.output.数据 }}`、`{{ params.主题 }}`）解析期报 `unexpected character` → node.failed → run 失败（已现场复现锁定）。`render_prompt` 渲染前经 `render::preprocess_non_ascii_attributes` 纯函数预处理：只在 `{{ }}`/`{% %}` 表达式内，把「非合法标识符（且非纯数字，保护 `1.5`/`list.0`）」的点访问段改写为等价下标 `["…"]`；连字符 id（`nodes.my-id.x`）同样受益，base 非法（`{{ my-id.x }}`）时后续段一并下标化；引号字符串（含转义）/既有 `["…"]`/普通文本/`{#注释#}` 不动；纯 ASCII 模板逐字节不变（零回归面）。
+- **FLOWSCOPE_RETENTION_DAYS 存储保留期（feat）**：env 设正整数 N 时，bootstrap 开库后执行 `store.prune_runs_before_days(N)`——事务内删除 `started_at` 早于 N 天的 runs 并按 delete_workflow 同款子查询级联删 events/artifacts/sessions，返回删除条数并 `tracing::info`；0/未设=禁用（永久保留），非法值 warn 忽略继续启动。桌面/浏览器/独立 server 三形态共用 bootstrap，一并生效。
+- 测试：cargo **65**（63 lib + 2 e2e；+6：预处理/端到端中文渲染 5 + prune 级联与幂等 1）；前端 specs 未动（纯后端改动）。文档同步（现状文档 §1/§2/§4/§5、README 1.4）。
+
 ## 2026-10-09 · fix: 访问令牌仅保护 /api——静态资源放行（`fix(core): 访问令牌仅保护 /api——静态资源放行（修复浏览器白屏）`）
 - **缺陷**：令牌中间件覆盖全部路径——浏览器经 `/?token=` 拿到 HTML 后，`<script>/<link>` 标签裸取 `/assets/index-*.js|css`（无法携带凭据）→ 401 → 白屏。curl 冒烟只测了 `/` 与 `/api`，未暴露。
 - **修复**：`auth_middleware` 开头路径分流——非 `/api` 一律放行（`/`、`/assets/*`、favicon、SPA 回退；静态资源不含密钥）；`/api`（全部方法）仍须 Bearer 或 `?token=`，401 body 不变；token=None 全透传不变。页面内 API 调用由前端 client 统一附加 `?token=`。
