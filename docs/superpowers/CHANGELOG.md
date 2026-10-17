@@ -30,6 +30,11 @@
 
 ## 2026-10-08 · 文件夹页行内标记编辑——tags 就地增删、保留注释回写（`feat(frontend): 文件夹页行内标记编辑——tags 就地增删、保留注释回写（含文档同步）`）
 
+## 2026-10-18 · 中文链路两连修：message 累积根因 + 提取候选扫描（9c95c7d + d3769b8）
+- 根因修复：真 ZCode 桥给正文块标 `messageId: msg_*`、给尾注标 `turninfo_*`，旧累积按 messageId 分组且 id 变化即整体覆盖——尾注抹掉正文（实测 135→56 字符）。改为无条件追加累积，兼容数组内容块，mock-agent 扩展 thought/message_id/message_array 字段做回归。
+- 结构化输出提取改候选扫描：整段 trim → 围栏块 → **从右向左平衡对象扫描**（字符串感知），优先取最后可解析且过 schema 的 JSON——解决思考回显 JSON 模板污染首尾切片的问题；失败附消息长度+尾部诊断。
+- 测试基线：cargo **71**（69 lib + 2 e2e）。
+
 ## 2026-10-02 · 文件夹页增强：分类标记 / 保存路径 / 刷新（e8d916c + `feat(frontend): 文件夹页分类标记与分组收起、编辑器保存回文件夹、刷新（含文档同步）`）
 - 后端：`WorkflowDef`/`RawMeta` 增 `meta.tags`（`Option<Vec<String>>`，不进引擎语义，编排忽略）；`GET /api/fs/workflows` 条目带 `tags`（缺省空数组）；新 `POST /api/fs/workflows/save` `{dir,file,yaml}`——目录存在/文件名防穿越+`.yaml|.yml`/YAML 可解析三层 400 校验后覆盖写回，响应 `{dir,file,bytes}`。
 - 前端：文件夹页按**首个 tag** 分组（组名集合字母序、「未分类」恒最后、组内名称不区分大小写排序），组行 ▶/▾ 展开/收起（localStorage `fs-folder-collapsed` 按目录记忆），行 tag 小徽标，「刷新」重读当前目录；「在编辑器打开」带 originDir/originFile → 编辑器 new 页「保存」旁多「**保存到文件夹**」按钮（校验门与保存一致、先 blur 冲刷，成功 toast「已保存到 <file> ✓」）；工作流设置「标签」输入（中英文逗号切分 trim 去空，空=删字段），YAML meta 键序 name/version/tags。

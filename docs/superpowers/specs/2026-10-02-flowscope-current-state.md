@@ -2,7 +2,7 @@
 
 - 日期：2026-10-02 ｜ 对应 main：`18142f0` ｜ 远端：https://github.com/SanfuZ/flowscope（私有）
 - 定位：**后续整体修改的单一权威参考**。历史设计（M1 spec）与各里程碑计划保留在原处作记录；本文档描述系统**当前实际行为**。改动落地后请同步更新本文档。
-- 测试基线：cargo **65**（63 lib + 2 e2e）· vitest **158** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
+- 测试基线：cargo **71**（69 lib + 2 e2e）· vitest **158** · Playwright e2e **4/4**。命令：`cargo test -p flowscope-core`、`cd frontend && npm test -- --run && npm run e2e`。
 
 ## 1. 功能总览
 
