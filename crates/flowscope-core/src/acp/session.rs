@@ -13,7 +13,7 @@
 //! - child stderr lines → `log.lines` `{"lines": [...], "level": "info"}`
 //!   (batched per read)
 //! - client-side callback decisions → `callback` / `permission` events
-//! - `stopReason`: `end_turn` → `Ok(last message)`; `cancelled` →
+//! - `stopReason`: `end_turn` → `Ok(全部 agent 文本消息的累积)`; `cancelled` →
 //!   `ProcessExit("cancelled")`; `refusal` → `Refusal`; `max_tokens` /
 //!   `max_turn_requests` → `MaxTokens`.
 
@@ -37,7 +37,7 @@ use agent_client_protocol::schema::v1::{
     StopReason, TerminalOutputRequest, WaitForTerminalExitRequest, WriteTextFileRequest,
 };
 use agent_client_protocol::util::MatchDispatch;
-use agent_client_protocol::{Agent, Client, LineDirection, SessionMessage};
+use agent_client_protocol::{Agent, Client, JsonRpcMessage, LineDirection, SessionMessage};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -198,29 +198,26 @@ struct ToolFields {
 #[derive(Debug, Default)]
 struct TurnState {
     tools: BTreeMap<String, ToolFields>,
-    /// `messageId` of the message currently being streamed, when the agent
-    /// tags its chunks.
-    current_message_id: Option<String>,
-    /// Text of the last complete agent message — the node output candidate.
+    /// 本回合全部 agent 文本（`agent_message_chunk` 的 Text 内容）的无损失
+    /// 累积——节点输出的提取输入。
+    ///
+    /// 根因（run_361fa44b）：真实 zcode 桥把正文 chunk 标为 `msg_<uuid>`，
+    /// 回合尾注（"✓ completed · cache …"）另起 `turninfo_<uuid>` messageId；
+    /// 旧的"messageId 变化即覆盖"策略让尾注抹掉正文，提取只见 56 字节尾注。
+    /// 事件流（msg.delta）一直是完整的，丢数据只发生在累积——现在所有文本
+    /// 块一律追加，使累积与事件流严格一致。
     last_message: String,
 }
 
 impl TurnState {
-    /// Groups chunk text into messages by `messageId` (spec: same id = same
-    /// message). Untagged chunks cannot be grouped, so each counts as its own
-    /// message; the mock agent relies on this (its `final_message` chunk must
-    /// be the whole node output).
-    fn push_agent_text(&mut self, message_id: &Option<String>, text: &str) {
-        let same_message = match (&self.current_message_id, message_id) {
-            (Some(current), Some(new)) => current == new,
-            _ => false,
-        };
-        if same_message {
-            self.last_message.push_str(text);
-        } else {
-            self.last_message = text.to_owned();
-            self.current_message_id = message_id.clone();
-        }
+    /// Appends one text chunk to the turn accumulation, losslessly: the
+    /// buffer is the exact concatenation of every text-bearing message chunk
+    /// in arrival order, mirroring the emitted `msg.delta` stream.
+    // 根因（run_361fa44b）：旧实现按 messageId 分组、"messageId 变化即整体
+    // 覆盖"；真实桥的回合尾注（turninfo_*）因此在正文之后把缓冲区覆盖成
+    // 56 字节尾注，提取失败。修复：一律追加，绝不覆盖。
+    fn push_agent_text(&mut self, text: &str) {
+        self.last_message.push_str(text);
     }
 }
 
@@ -699,6 +696,18 @@ async fn handle_dispatch(
     turn: &mut TurnState,
     sink: &(dyn Fn(FsEvent) + Sync),
 ) -> Result<(), acp::Error> {
+    // 桥内容形态容错（run_361fa44b 排查的伴生风险）：部分桥把 chunk 的
+    // `content` 发成块数组，类型化解析对数组形态直接失败，整条通知会升级成
+    // 节点级 ProcessExit（正文+尾注全部丢失）。这里只对"content 为数组"的
+    // 通知做归一化（数组内文本块串接为单个 Text 块），其余形态原样交给下方
+    // 类型化路径，保真原始错误。
+    if let acp::Dispatch::Notification(untyped) = &dispatch
+        && SessionNotification::matches_method(untyped.method())
+        && let Some(update) = normalized_array_content_update(untyped.params())
+    {
+        map_update(state, &update, turn, sink);
+        return Ok(());
+    }
     MatchDispatch::new(dispatch)
         .if_notification(async |notification: SessionNotification| {
             map_update(state, &notification.update, turn, sink);
@@ -706,6 +715,32 @@ async fn handle_dispatch(
         })
         .await
         .otherwise_ignore()
+}
+
+/// `session/update` 参数里 `update.content` 为块数组时，把数组中的文本块串接
+/// 成单个 Text 块并解析为类型化 [`SessionUpdate`]；其余形态返回 `None`（走
+/// 类型化路径）。非文本块（image 等）无法转文本，若数组中没有文本块则保持
+/// `None`，交回类型化路径按原语义处理。
+fn normalized_array_content_update(params: &Value) -> Option<SessionUpdate> {
+    let update = params.get("update")?;
+    if !update.get("content").is_some_and(Value::is_array) {
+        return None;
+    }
+    let kind = update.get("sessionUpdate")?.as_str()?;
+    let mut text = String::new();
+    for block in update["content"].as_array()? {
+        if block.get("type").and_then(Value::as_str) == Some("text")
+            && let Some(part) = block.get("text").and_then(Value::as_str)
+        {
+            text.push_str(part);
+        }
+    }
+    let normalized = json!({
+        "sessionUpdate": kind,
+        "content": {"type": "text", "text": text},
+        "messageId": update.get("messageId"),
+    });
+    serde_json::from_value(normalized).ok()
 }
 
 fn map_update(
@@ -718,8 +753,7 @@ fn map_update(
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => {
             if let ContentBlock::Text(text) = &chunk.content {
-                let message_id = chunk.message_id.as_ref().map(|id| id.to_string());
-                turn.push_agent_text(&message_id, &text.text);
+                turn.push_agent_text(&text.text);
                 emit(
                     EventKind::MsgDelta,
                     json!({"delta": text.text, "contentType": "text"}),
@@ -943,7 +977,13 @@ mod tests {
         let msg = run_agent_node(&cfg, &req("hi", 10_000), &sink)
             .await
             .unwrap();
-        assert_eq!(msg, r#"{"ok": true, "data_path": "out/report.md"}"#);
+        // 累积无损失：demo 脚本的两条 step 文本 + step JSON + final_message
+        // 全部按序保留（结构化提取由 render 层候选扫描负责）。
+        assert_eq!(
+            msg,
+            "正在收集数据...检索完成{\"ok\": true, \"data_path\": \"out/report.md\"}\
+             {\"ok\": true, \"data_path\": \"out/report.md\"}"
+        );
 
         let ev = events.lock().unwrap();
         let kinds: Vec<EventKind> = ev.iter().map(|e| e.kind).collect();
@@ -1149,7 +1189,13 @@ mod tests {
         let msg = run_agent_node(&cfg, &req("hi", 10_000), &sink)
             .await
             .unwrap();
-        assert_eq!(msg, r#"{"ok": true, "data_path": "out/report.md"}"#);
+        // 累积无损失：demo 脚本的两条 step 文本 + step JSON + final_message
+        // 全部按序保留（model 配置失败不改变回合语义）。
+        assert_eq!(
+            msg,
+            "正在收集数据...检索完成{\"ok\": true, \"data_path\": \"out/report.md\"}\
+             {\"ok\": true, \"data_path\": \"out/report.md\"}"
+        );
         assert!(
             events
                 .lock()
@@ -1188,5 +1234,75 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_file(&outside).ok();
+    }
+
+    // ---------- 桥形态回归（run_361fa44b 根因修复） ----------
+
+    fn write_temp_script(yaml: &str) -> String {
+        let path =
+            std::env::temp_dir().join(format!("flowscope-repro-{}.yaml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, yaml).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// 根因回归（run_361fa44b）：真实 zcode 桥把正文 chunk 标为 `msg_<uuid>`
+    /// 流式发出、回合尾注另起 `turninfo_<uuid>` messageId，且部分 chunk 的
+    /// `content` 是块数组。修复前：messageId 变化触发覆盖，最终消息只剩
+    /// 56 字节尾注（正文 JSON 全丢）；content 为数组的通知直接把节点打成
+    /// ProcessExit。修复后：所有文本块（含数组块）无损进入累积，思考块
+    /// （contentType reasoning）只进事件流、不进累积。
+    #[tokio::test]
+    async fn accumulates_text_across_message_ids_array_content_and_footer() {
+        let script = write_temp_script(
+            r#"steps:
+  - {thought: "思考中 {\"template\": \"x\"}"}
+  - {thought: "继续推理 {\"a\": 1}"}
+  - {message: "{\"", message_id: "msg_abc"}
+  - {message: "ok\": true}", message_id: "msg_abc"}
+  - {message_array: ["{\"ok\": true, \"数据\": \"已生成\"}"], message_id: "msg_abc"}
+  - {message: "✓ completed · cache 8/9 messages", message_id: "turninfo_def"}
+stop: end_turn
+"#,
+        );
+        let (events, sink) = collect();
+        let msg = run_agent_node(&mock_cfg(&script), &req("hi", 10_000), &sink)
+            .await
+            .unwrap();
+
+        // 无损失：正文分片 + 数组内容块文本 + 尾注全部在最终消息里，且顺序
+        // 与事件流一致（旧实现只剩 56 字节尾注）。
+        assert_eq!(
+            msg,
+            "{\"ok\": true}{\"ok\": true, \"数据\": \"已生成\"}\
+             ✓ completed · cache 8/9 messages"
+        );
+        // 思考块（含 `{`）不进累积——它们只映射为 contentType reasoning。
+        assert!(!msg.contains("template"));
+
+        // MsgDelta 事件流与修复前一致：2 条 reasoning + 4 条 text（数组块
+        // 归一化后按其文本发出）。
+        let deltas: Vec<(String, String)> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == EventKind::MsgDelta)
+            .map(|e| {
+                (
+                    e.payload["contentType"].as_str().unwrap_or("").to_owned(),
+                    e.payload["delta"].as_str().unwrap_or("").to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            deltas,
+            vec![
+                ("reasoning".into(), "思考中 {\"template\": \"x\"}".into()),
+                ("reasoning".into(), "继续推理 {\"a\": 1}".into()),
+                ("text".into(), "{\"".into()),
+                ("text".into(), "ok\": true}".into()),
+                ("text".into(), "{\"ok\": true, \"数据\": \"已生成\"}".into()),
+                ("text".into(), "✓ completed · cache 8/9 messages".into()),
+            ]
+        );
     }
 }

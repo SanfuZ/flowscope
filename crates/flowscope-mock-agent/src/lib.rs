@@ -83,6 +83,17 @@ struct Step {
     /// Emit an `agent_message_chunk` with this text.
     #[serde(default)]
     message: Option<String>,
+    /// Emit an `agent_thought_chunk` with this text (reasoning stream).
+    #[serde(default)]
+    thought: Option<String>,
+    /// `messageId` attached to this step's message/thought chunk (real agents
+    /// tag chunks; different ids mean different messages per the v1 spec).
+    #[serde(default)]
+    message_id: Option<String>,
+    /// Emit an `agent_message_chunk` whose `content` is an ARRAY of text
+    /// blocks (bridge deviation shape) instead of a single text object.
+    #[serde(default)]
+    message_array: Option<Vec<String>>,
     /// Emit a `tool_call` (first sight of the id) or `tool_call_update`.
     #[serde(default)]
     tool: Option<ToolStep>,
@@ -247,14 +258,35 @@ fn run_prompt(script: &Script, session_id: &str) -> Option<i32> {
         if let Some(delay_ms) = step.delay_ms {
             thread::sleep(Duration::from_millis(delay_ms));
         }
+        if let Some(text) = &step.thought {
+            let mut update = json!({
+                "sessionUpdate": "agent_thought_chunk",
+                "content": text_block(text),
+            });
+            if let Some(id) = &step.message_id {
+                update["messageId"] = json!(id);
+            }
+            session_update(session_id, update);
+        }
+        if let Some(texts) = &step.message_array {
+            let mut update = json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": texts.iter().map(|text| text_block(text)).collect::<Vec<_>>(),
+            });
+            if let Some(id) = &step.message_id {
+                update["messageId"] = json!(id);
+            }
+            session_update(session_id, update);
+        }
         if let Some(text) = &step.message {
-            session_update(
-                session_id,
-                json!({
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": text_block(text),
-                }),
-            );
+            let mut update = json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": text_block(text),
+            });
+            if let Some(id) = &step.message_id {
+                update["messageId"] = json!(id);
+            }
+            session_update(session_id, update);
         }
         if let Some(tool) = &step.tool {
             session_update(session_id, tool_update(tool, &mut seen_tools));
