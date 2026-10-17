@@ -9,7 +9,7 @@
 | 子系统 | 现状 |
 |---|---|
 | ACP 接入 | 官方 `agent-client-protocol` crate 2.2（Client 角色，v1 稳定面）；agent 经 `agents.toml` 注册（command/cwd/env/model/permission_default）；内置演示 agent `mock`/`bad-mock`；**ZCode 经 zcode-acp-server 桥自动注册**（见 §4） |
-| 工作流引擎 | YAML DSL（meta（含可选 `tags` 标记，编排忽略）/params/on_node_failure/nodes[id,agent,prompt,output_schema,retry,timeout_ms]/edges[from,to,when]）；Kahn 拓扑+条件边（==/contains/and）+层内并行（Semaphore 4）；重试退避/超时/取消/跳过级联；minijinja Strict 模板（`{{ params.x }}`、`{{ nodes.<id>.output.<path> }}`；**非 ASCII/连字符等非法标识符的点访问渲染前自动转下标，见 §4/§5**）；output_schema 结构化提取 |
+| 工作流引擎 | YAML DSL（meta（含可选 `tags` 标记，编排忽略）/params/on_node_failure/nodes[id,agent,prompt,output_schema,retry,timeout_ms]/edges[from,to,when]）；Kahn 拓扑+条件边（==/contains/and）+层内并行（Semaphore 4）；重试退避/超时/取消/跳过级联；minijinja Strict 模板（`{{ params.x }}`、`{{ nodes.<id>.output.<path> }}`；**非 ASCII/连字符等非法标识符的点访问渲染前自动转下标，见 §4/§5**）；output_schema 结构化提取：候选扫描（末位平衡 JSON/围栏） |
 | 事件溯源 | SQLite（WAL）单文件 `~/.flowscope/flowscope.db`；表 workflows/runs/events/sessions/artifacts；事件只追加，节点状态=事件投影；每 run 内 seq 严格递增 |
 | 实时通道 | SSE `GET /api/runs/:id/events?after=<seq>`（Last-Event-ID 等价）；hub=broadcast(1024)+ring(4096)；**Lagged → 断流促重连回补**；EventSource 自动重连（1s→10s 退避） |
 | 桌面/部署 | Tauri 2 壳（进程内嵌引擎，随机端口，`FLOWSCOPE_DESKTOP_PORT` 可固定，**静态资源走编译期嵌入**）；dev 启动器 `bin/dev`（39271，磁盘 dist 优先）；**独立无头服务器 `bin/server`（flowscope-server.exe）**——前端 UI 嵌入 exe、随机访问令牌、打印本机 IPv4 入口 URL；bundle.active=false（未出安装包） |

@@ -171,25 +171,114 @@ pub fn preprocess_non_ascii_attributes(template: &str) -> String {
 }
 
 /// 从最后一条消息提取结构化输出：
-/// 无 schema → `{"text": last_message}`；有 schema → 截取首个 '{' 到末个 '}' 解析 JSON 并校验；
-/// 无合法 JSON 或校验失败 → Err（引擎将其转为 node.failed(extraction)）。
+/// 无 schema → `{"text": last_message}`；有 schema → 候选扫描提取，按优先序生成候选，
+/// 首个「可解析且通过 schema 校验」者胜出：
+/// ① 整条消息 trim；② ```json / ``` 围栏块内文（逐个）；③ 末位平衡 JSON 对象扫描
+/// （从右向左逐个 '{' 作起点做字符串感知的括号配对）——右边的候选先产生，天然优先
+/// 最终答案 JSON 而非思考文本中回显的模板 JSON（旧「首 '{' 到末 '}'」切片法会被其污染）。
+/// 仅支持对象（数组不作为候选）。全部候选失败 → Err（附消息长度与尾部 200 字符诊断；
+/// 引擎将其转为 node.failed(extraction)）。
 pub fn extract_output(last_message: &str, schema: Option<&Value>) -> Result<Value, RenderError> {
     let Some(schema) = schema else {
         return Ok(serde_json::json!({"text": last_message}));
     };
-    // 首个 '{' 到末个 '}' 之间的子串；缺失或顺序颠倒（'}' 在 '{' 之前）均视为无 JSON。
-    let candidate = match (last_message.find('{'), last_message.rfind('}')) {
-        (Some(start), Some(end)) if end > start => &last_message[start..=end],
-        _ => return Err(RenderError::Extraction("消息中未找到 JSON 对象".into())),
-    };
-    let value: Value = serde_json::from_str(candidate)
-        .map_err(|e| RenderError::Extraction(format!("JSON 解析失败: {e}")))?;
     let validator = jsonschema::validator_for(schema)
         .map_err(|e| RenderError::Extraction(format!("schema 无效: {e}")))?;
-    validator
-        .validate(&value)
-        .map_err(|e| RenderError::Extraction(format!("schema 校验失败: {e}")))?;
-    Ok(value)
+
+    let mut candidates: Vec<&str> = vec![last_message.trim()];
+    candidates.extend(fenced_json_blocks(last_message));
+    candidates.extend(balanced_objects_from_end(last_message));
+
+    for candidate in candidates {
+        let Ok(value) = serde_json::from_str::<Value>(candidate) else {
+            continue;
+        };
+        if validator.validate(&value).is_ok() {
+            return Ok(value);
+        }
+    }
+
+    // 有界诊断：消息总长 + 尾部 200 字符（换行转义，保证单行可读）。
+    let char_count = last_message.chars().count();
+    let tail: String = last_message
+        .chars()
+        .skip(char_count.saturating_sub(200))
+        .collect();
+    let tail = tail.replace('\n', "\\n").replace('\r', "\\r");
+    Err(RenderError::Extraction(format!(
+        "消息中未找到可解析的 JSON 对象（消息长度 {char_count}，尾部 200 字符: {tail}）"
+    )))
+}
+
+/// 收集消息中所有围栏代码块（```json …``` / ``` …```）的内文切片。
+/// ``` 后至行尾的非空字母数字串视为语言标记行，整行跳过；内文到下一个 ``` 为止
+/// （无闭合围栏则放弃该块）。切片引用原消息，零拷贝。
+fn fenced_json_blocks(message: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = message[i..].find("```") {
+        let after = i + rel + 3;
+        let body_start = match message[after..].find('\n') {
+            Some(nl) => {
+                let tag = message[after..after + nl].trim();
+                if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    after + nl + 1
+                } else {
+                    after
+                }
+            }
+            None => after,
+        };
+        match message[body_start..].find("```") {
+            Some(close_rel) => {
+                blocks.push(&message[body_start..body_start + close_rel]);
+                i = body_start + close_rel + 3;
+            }
+            None => break,
+        }
+    }
+    blocks
+}
+
+/// 末位平衡 JSON 对象扫描：从消息末尾向左逐个 '{' 作起点，前向做字符串感知的
+/// 括号配对到其匹配 '}'，得到候选切片（右先左后 → 最终答案 JSON 排在思考回显之前）。
+fn balanced_objects_from_end(message: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = message.as_bytes();
+    let mut pos = message.len();
+    while let Some(start) = message[..pos].rfind('{') {
+        if let Some(end) = match_object(bytes, start) {
+            out.push(&message[start..=end]);
+        }
+        pos = start;
+    }
+    out
+}
+
+/// 从 `start`（指向 '{'）做括号配对，返回匹配 '}' 的字节下标；无匹配（不闭合）→ None。
+/// 引号字符串内的 '{'/'}' 不参与计数，转义序列（`\"`、`\\` 等）不终止字符串。
+fn match_object(bytes: &[u8], start: usize) -> Option<usize> {
+    debug_assert_eq!(bytes[start], b'{');
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' if in_string => in_string = false,
+            b'"' => in_string = true,
+            b'\\' if in_string => i += 1, // 跳过转义后的字符
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -303,5 +392,65 @@ mod tests {
         assert_eq!(v["text"], "纯文本");
         assert!(extract_output("没有json", Some(&schema)).is_err());
         assert!(extract_output(r#"{"ok": "yes"}"#, Some(&schema)).is_err()); // 类型不符
+    }
+
+    // ---------- 结构化提取候选扫描（末位平衡 JSON/围栏） ----------
+
+    #[test]
+    fn extraction_prefers_last_object_over_thinking_echo() {
+        // 思考文本回显模板 JSON（旧「首 '{' 到末 '}'」切片会横跨两个对象解析失败）
+        let schema = json!({"type":"object","required":["ok","数据"],"properties":{
+            "ok":{"type":"boolean"},"数据":{"type":"string"}}});
+        let msg = "思考：模板 {\"ok\": true, \"数据\": \"<占位>\"} \n\n正文：{\"ok\": true, \"数据\": \"3条数据\"}";
+        let v = extract_output(msg, Some(&schema)).unwrap();
+        assert_eq!(v["数据"], "3条数据");
+    }
+
+    #[test]
+    fn extraction_accepts_fenced_json_block() {
+        let schema =
+            json!({"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}});
+        // 带语言标记的围栏
+        let v = extract_output(
+            "结果如下：\n```json\n{\"ok\": true}\n```\n以上。",
+            Some(&schema),
+        )
+        .unwrap();
+        assert_eq!(v["ok"], true);
+        // 无语言标记的围栏
+        let v = extract_output("```\n{\"ok\": false}\n```", Some(&schema)).unwrap();
+        assert_eq!(v["ok"], false);
+    }
+
+    #[test]
+    fn extraction_error_includes_bounded_diagnostics() {
+        let schema =
+            json!({"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}});
+        let err = extract_output("纯文本没有大括号", Some(&schema))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("消息长度"), "缺少诊断: {err}");
+        assert!(err.contains("尾部 200 字符"));
+    }
+
+    #[test]
+    fn extraction_rejects_unbalanced_braces() {
+        let schema =
+            json!({"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}});
+        assert!(extract_output("{\"ok\": true", Some(&schema)).is_err());
+        assert!(extract_output("{\"ok\": true,\"嵌套\": {\"a\": 1}", Some(&schema)).is_err());
+    }
+
+    #[test]
+    fn extraction_tolerates_braces_in_strings_and_trailing_text() {
+        let schema = json!({"type":"object","required":["ok"],"properties":{
+            "ok":{"type":"boolean"},"备注":{"type":"string"}}});
+        // 字符串内的大括号不参与配对；对象后仍有尾随文本
+        let msg = r#"答案 {"ok": true, "备注": "花括号 } { 不影响"} 附注：完成。"#;
+        let v = extract_output(msg, Some(&schema)).unwrap();
+        assert_eq!(v["备注"], "花括号 } { 不影响");
+        // 对象后多余的 '}'（右向左扫描仍从正确的 '{' 配对出完整对象）
+        let v = extract_output(r#"{"ok": true}}"#, Some(&schema)).unwrap();
+        assert_eq!(v["ok"], true);
     }
 }
