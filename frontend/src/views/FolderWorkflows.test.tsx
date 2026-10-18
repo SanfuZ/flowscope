@@ -62,6 +62,15 @@ function EditorProbe() {
   );
 }
 
+/** 行 testid 构造（与组件 rowTestId 同规则）：rowKey = originDir/file，
+ *  encodeURIComponent 编码——跨目录同名文件 testid 不重复。 */
+function tagEditId(dir: string, file: string): string {
+  return `tag-edit-${encodeURIComponent(`${dir}/${file}`)}`;
+}
+function deriveId(dir: string, file: string): string {
+  return `derive-${encodeURIComponent(`${dir}/${file}`)}`;
+}
+
 function renderFolder() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createMemoryRouter(
@@ -320,7 +329,7 @@ describe('FolderWorkflows：子目录归档分组（relDir）', () => {
     renderFolder();
     await screen.findByText('Alpha');
 
-    fireEvent.click(screen.getByTestId('derive-c.yaml')); // 子A/alpha.yaml
+    fireEvent.click(screen.getByTestId(deriveId('D:/team/wf/子A', 'c.yaml'))); // 子A/alpha.yaml
     const dlg = screen.getByRole('dialog', { name: '派生工作流' });
     expect((within(dlg).getByLabelText('目录路径') as HTMLInputElement).value).toBe('D:/team/wf/子A');
     expect((within(dlg).getByLabelText('文件名') as HTMLInputElement).value).toBe('c-copy.yaml');
@@ -332,12 +341,52 @@ describe('FolderWorkflows：子目录归档分组（relDir）', () => {
     renderFolder();
     await screen.findByText('Alpha');
 
-    fireEvent.click(screen.getByTestId('tag-edit-b.yaml'));
+    fireEvent.click(screen.getByTestId(tagEditId('D:/team/wf/子A', 'b.yaml')));
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(api.saveFolderWorkflow).toHaveBeenCalledTimes(1));
     const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
     expect(arg.dir).toBe('D:/team/wf/子A'); // 不能写到根目录（否则根目录出重复文件）
     expect(arg.file).toBe('b.yaml');
+  });
+
+  it('跨目录同名文件：面板只开在目标行，保存写对应目录的文件（rowKey 唯一键）', async () => {
+    const yamlA =
+      '# 子A 注释\nmeta:\n  name: Same\n  version: 1\n  tags:\n    - 甲\nnodes:\n  - {id: n1, agent: m, prompt: p}\n';
+    const yamlB =
+      '# 子B 注释\nmeta:\n  name: Same\n  version: 1\n  tags:\n    - 乙\nnodes:\n  - {id: n1, agent: m, prompt: p}\n';
+    const DUP_FILES = [
+      { file: 'same.yaml', name: 'Same', version: 1, valid: true, error: null, yaml: yamlA, tags: ['甲'], relDir: '子A' },
+      { file: 'same.yaml', name: 'Same', version: 1, valid: true, error: null, yaml: yamlB, tags: ['乙'], relDir: '子B' },
+    ];
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: DUP_FILES });
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: 'D:/team/wf/子B', file: 'same.yaml', bytes: 99 });
+    renderFolder();
+    await screen.findByText('子A (1)');
+
+    // testid 按 rowKey（目录+文件）编码：同名文件两个 testid 互不冲突
+    expect(screen.getByTestId(deriveId('D:/team/wf/子A', 'same.yaml'))).toBeTruthy();
+    expect(screen.getByTestId(deriveId('D:/team/wf/子B', 'same.yaml'))).toBeTruthy();
+
+    // 打开子B 行的标记面板：全页只有一个面板（旧实现按裸 basename 匹配会两行同开）
+    fireEvent.click(screen.getByTestId(tagEditId('D:/team/wf/子B', 'same.yaml')));
+    const panels = screen.getAllByLabelText('标记');
+    expect(panels).toHaveLength(1);
+    expect((panels[0] as HTMLInputElement).value).toBe('乙'); // 铺的是子B 行的 tags
+    // 面板行插在子B 的数据行正下方（按 tag 徽标「乙」定位该行）
+    const rows = screen.getAllByRole('row');
+    const rowB = rows.findIndex((r) =>
+      Array.from(r.querySelectorAll('.fs-tag-pill')).some((p) => p.textContent === '乙'),
+    );
+    expect(rows[rowB + 1].className).toContain('fs-tagpop-row');
+
+    // 保存：写子B 目录的 same.yaml（不会串写到子A）
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(api.saveFolderWorkflow).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.dir).toBe('D:/team/wf/子B');
+    expect(arg.file).toBe('same.yaml');
+    expect(arg.yaml).toContain('- 乙'); // 手术在子B 行的 yaml 原文上
+    expect(arg.yaml).toContain('# 子B 注释');
   });
 });
 
@@ -365,7 +414,7 @@ describe('FolderWorkflows：行内标记编辑', () => {
     await screen.findByText('Tagged');
 
     expect(screen.queryByLabelText('标记')).toBeNull(); // 面板未开
-    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    fireEvent.click(screen.getByTestId(tagEditId('D:/team/wf', 't.yaml')));
     const input = screen.getByLabelText('标记') as HTMLInputElement;
     expect(input.value).toBe('旧组, second'); // join(', ') 铺初值
 
@@ -382,7 +431,7 @@ describe('FolderWorkflows：行内标记编辑', () => {
     await screen.findByText('Tagged');
     vi.mocked(api.listFolderWorkflows).mockClear();
 
-    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    fireEvent.click(screen.getByTestId(tagEditId('D:/team/wf', 't.yaml')));
     fireEvent.change(screen.getByLabelText('标记'), { target: { value: ' 新组， extra ,,' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
@@ -408,7 +457,7 @@ describe('FolderWorkflows：行内标记编辑', () => {
     renderFolder();
     await screen.findByText('Tagged');
 
-    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    fireEvent.click(screen.getByTestId(tagEditId('D:/team/wf', 't.yaml')));
     fireEvent.change(screen.getByLabelText('标记'), { target: { value: '别的' } });
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
     expect(api.saveFolderWorkflow).not.toHaveBeenCalled();
@@ -421,7 +470,7 @@ describe('FolderWorkflows：行内标记编辑', () => {
     renderFolder();
     await screen.findByText('Tagged');
 
-    fireEvent.click(screen.getByTestId('tag-edit-t.yaml'));
+    fireEvent.click(screen.getByTestId(tagEditId('D:/team/wf', 't.yaml')));
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     const err = await screen.findByText('文件名不合法');
     expect(err.className).toContain('fs-error-text');
@@ -433,11 +482,11 @@ describe('FolderWorkflows：行内标记编辑', () => {
     renderFolder();
     await screen.findByText('Tagged');
 
-    const bad = screen.getByTestId('tag-edit-c.yml') as HTMLButtonElement;
+    const bad = screen.getByTestId(tagEditId('D:/team/wf', 'c.yml')) as HTMLButtonElement;
     expect(bad.disabled).toBe(true);
     expect(bad.getAttribute('title')).toBe('文件无法解析，请先在编辑器中修复');
     // 合法行不受影响
-    expect((screen.getByTestId('tag-edit-t.yaml') as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTestId(tagEditId('D:/team/wf', 't.yaml')) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -464,10 +513,10 @@ describe('FolderWorkflows：行内派生（快速另存）', () => {
     renderFolder();
     await screen.findByText('Derived');
 
-    const bad = screen.getByTestId('derive-c.yaml') as HTMLButtonElement;
+    const bad = screen.getByTestId(deriveId('D:/team/wf', 'c.yaml')) as HTMLButtonElement;
     expect(bad.disabled).toBe(true);
     expect(bad.getAttribute('title')).toBe('文件无法解析，请先在编辑器中修复');
-    const good = screen.getByTestId('derive-d.yml') as HTMLButtonElement;
+    const good = screen.getByTestId(deriveId('D:/team/wf', 'd.yml')) as HTMLButtonElement;
     expect(good.disabled).toBe(false);
     expect(good.getAttribute('title')).toBe('从此工作流另存为新文件');
   });
@@ -478,7 +527,7 @@ describe('FolderWorkflows：行内派生（快速另存）', () => {
     await screen.findByText('Derived');
 
     expect(screen.queryByRole('dialog', { name: '派生工作流' })).toBeNull();
-    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.click(screen.getByTestId(deriveId('D:/team/wf', 'd.yml')));
     const dlg = screen.getByRole('dialog', { name: '派生工作流' });
     expect((within(dlg).getByLabelText('目录路径') as HTMLInputElement).value).toBe('D:/team/wf');
     expect((within(dlg).getByLabelText('文件名') as HTMLInputElement).value).toBe('d-copy.yml'); // .yml 扩展名保留
@@ -493,7 +542,7 @@ describe('FolderWorkflows：行内派生（快速另存）', () => {
     await screen.findByText('Derived');
     vi.mocked(api.listFolderWorkflows).mockClear();
 
-    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.click(screen.getByTestId(deriveId('D:/team/wf', 'd.yml')));
     const dlg = screen.getByRole('dialog', { name: '派生工作流' });
     fireEvent.change(within(dlg).getByLabelText('标记'), { target: { value: ' 新组， extra ,,' } });
     fireEvent.click(within(dlg).getByRole('button', { name: '保存' }));
@@ -522,7 +571,7 @@ describe('FolderWorkflows：行内派生（快速另存）', () => {
     await screen.findByText('Derived');
     vi.mocked(api.listFolderWorkflows).mockClear();
 
-    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.click(screen.getByTestId(deriveId('D:/team/wf', 'd.yml')));
     fireEvent.click(screen.getByRole('button', { name: '保存' })); // 标记不动直接保存
 
     await waitFor(() => expect(api.saveFolderWorkflow).toHaveBeenCalledTimes(1));
@@ -538,7 +587,7 @@ describe('FolderWorkflows：行内派生（快速另存）', () => {
     renderFolder();
     await screen.findByText('Derived');
 
-    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.click(screen.getByTestId(deriveId('D:/team/wf', 'd.yml')));
     fireEvent.change(screen.getByLabelText('文件名'), { target: { value: 'other.yaml' } });
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
     expect(api.saveFolderWorkflow).not.toHaveBeenCalled();
@@ -551,7 +600,7 @@ describe('FolderWorkflows：行内派生（快速另存）', () => {
     renderFolder();
     await screen.findByText('Derived');
 
-    fireEvent.click(screen.getByTestId('derive-d.yml'));
+    fireEvent.click(screen.getByTestId(deriveId('D:/team/wf', 'd.yml')));
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
     const dlg = screen.getByRole('dialog', { name: '派生工作流' });
     const err = await within(dlg).findByText('文件已存在且只读');

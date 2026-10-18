@@ -55,6 +55,19 @@ function originDirOf(resolvedDir: string, f: FolderWorkflow): string {
   return rel === '' ? resolvedDir : `${resolvedDir}/${rel}`;
 }
 
+/** 行唯一键：来源目录 + '/' + 文件名。不同子目录下的同名文件（子目录归档
+ *  的目标场景）键不同——标记面板开合/渲染/保存一律按此键匹配，杜绝按裸
+ *  basename 匹配造成的跨目录同名文件串写/串开。 */
+function rowKey(resolvedDir: string, f: FolderWorkflow): string {
+  return `${originDirOf(resolvedDir, f)}/${f.file}`;
+}
+
+/** 行 testid 后缀：rowKey 含 `/`、`:`、中文等字符，encodeURIComponent 保唯一
+ *  且不与路径分隔符混淆。 */
+function rowTestId(resolvedDir: string, f: FolderWorkflow, prefix: string): string {
+  return `${prefix}-${encodeURIComponent(rowKey(resolvedDir, f))}`;
+}
+
 /** 读某目录的收起组名集合（localStorage 损坏/缺省 → 空集）。 */
 function readCollapsed(dir: string): string[] {
   try {
@@ -133,7 +146,8 @@ export default function FolderWorkflows() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>([]);
-  // 行内标记编辑：当前打开面板的文件名（null=无）；草稿/错误/保存中随行面板展示
+  // 行内标记编辑：当前打开面板的行键 rowKey（目录+文件，null=无）；草稿/错误/
+  // 保存中随行面板展示
   const [tagEditFile, setTagEditFile] = useState<string | null>(null);
   const [tagDraft, setTagDraft] = useState('');
   const [tagError, setTagError] = useState('');
@@ -184,9 +198,10 @@ export default function FolderWorkflows() {
     if (resolvedDir) writeCollapsed(resolvedDir, next);
   };
 
-  /** 打开行内标记面板：每次打开都按当前 tags 重新铺初值；单例（开新关旧）。 */
+  /** 打开行内标记面板：每次打开都按当前 tags 重新铺初值；单例（开新关旧）。
+   *  面板归属按 rowKey（目录+文件）匹配——跨目录同名文件只开所在行。 */
   const openTagEdit = (f: FolderWorkflow) => {
-    setTagEditFile(f.file);
+    setTagEditFile(rowKey(resolvedDir, f));
     setTagDraft(f.tags.join(', '));
     setTagError('');
   };
@@ -386,20 +401,23 @@ export default function FolderWorkflows() {
                             >
                               在编辑器打开
                             </button>
-                            {/* 行内标记编辑：解析失败文件禁用（YAML 动不了） */}
+                            {/* 行内标记编辑：解析失败文件禁用（YAML 动不了）；
+                                testid 按 rowKey 编码——跨目录同名文件不重复 */}
                             <button
                               className="fs-btn fs-btn--ghost fs-btn--compact"
-                              data-testid={`tag-edit-${f.file}`}
+                              data-testid={rowTestId(resolvedDir, f, 'tag-edit')}
                               disabled={!f.valid}
                               title={f.valid ? undefined : '文件无法解析，请先在编辑器中修复'}
                               onClick={() => openTagEdit(f)}
                             >
                               标记
                             </button>
-                            {/* 派生（快速另存）：解析失败文件禁用（源 YAML 动不了） */}
+                            {/* 派生（快速另存）：解析失败文件禁用（源 YAML 动不了）；
+                                deriveFrom 存整行对象（非 basename 键），对话框天然单例，
+                                仅 testid 按 rowKey 编码去重 */}
                             <button
                               className="fs-btn fs-btn--compact"
-                              data-testid={`derive-${f.file}`}
+                              data-testid={rowTestId(resolvedDir, f, 'derive')}
                               disabled={!f.valid}
                               title={f.valid ? '从此工作流另存为新文件' : '文件无法解析，请先在编辑器中修复'}
                               onClick={() => openDerive(f)}
@@ -408,19 +426,20 @@ export default function FolderWorkflows() {
                             </button>
                           </td>
                         </tr>
-                        {/* 标记面板：插在目标行正下方的全宽行（单例），保存/取消就地反馈 */}
-                        {tagEditFile === f.file && (
+                        {/* 标记面板：按 rowKey 匹配（插在目标行正下方的全宽行，
+                            单例），保存/取消就地反馈 */}
+                        {tagEditFile === rowKey(resolvedDir, f) && (
                           <tr className="fs-tagpop-row">
                             <td colSpan={5}>
                               <div className="fs-tagpop">
                                 <label
                                   className="fs-form-label fs-tagpop__label"
-                                  htmlFor={`fs-tag-input-${f.file}`}
+                                  htmlFor={`fs-tag-input-${encodeURIComponent(rowKey(resolvedDir, f))}`}
                                 >
                                   标记
                                 </label>
                                 <input
-                                  id={`fs-tag-input-${f.file}`}
+                                  id={`fs-tag-input-${encodeURIComponent(rowKey(resolvedDir, f))}`}
                                   className="fs-form-input fs-tagpop__input"
                                   placeholder="逗号分隔，首个用于文件夹页分组；清空=删除标记"
                                   value={tagDraft}

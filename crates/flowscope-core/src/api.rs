@@ -663,12 +663,13 @@ fn collect_yaml_files(
         if ft.is_symlink() {
             continue;
         }
-        let path = entry.path();
-        if ft.is_dir() {
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-            if name.starts_with('.') || FS_SCAN_SKIP_DIRS.contains(&name) {
-                continue;
-            }
+            let path = entry.path();
+            if ft.is_dir() {
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                // 黑名单大小写不敏感（Node_Modules/Target/DIST 同样跳过）
+                if name.starts_with('.') || FS_SCAN_SKIP_DIRS.contains(&name.to_ascii_lowercase().as_str()) {
+                    continue;
+                }
             if depth >= FS_SCAN_MAX_DEPTH {
                 continue; // 子目录深度 = depth+1 > 上限：整层排除
             }
@@ -1856,7 +1857,8 @@ mod tests {
         let deep = mk("子A/深");
         std::fs::write(deep.join("charlie.yaml"), wf("Mike")).unwrap();
         // 跳过名单：.git / node_modules / target / dist 里的 yaml 不收录
-        for skip in [".git", "node_modules", "target", "dist"] {
+        // （黑名单大小写不敏感：Node_Modules 同样跳过）
+        for skip in [".git", "node_modules", "Node_Modules", "target", "dist"] {
             let p = mk(skip);
             std::fs::write(p.join("x.yaml"), wf("SkipMe")).unwrap();
         }
