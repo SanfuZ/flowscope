@@ -625,6 +625,9 @@ fn resolve_dir(explicit: Option<&str>) -> PathBuf {
 /// 单个文件夹工作流条目（列出后再统一排序）。
 struct FsWfFile {
     file: String,
+    /// 文件相对根目录的目录部分（`""`=根目录；子目录用 `/` 分隔，如
+    /// `归档/2026`）。子目录归档（递归扫描）的分组字段，前端按它分组展示。
+    rel_dir: String,
     name: String,
     version: Option<u32>,
     valid: bool,
@@ -634,10 +637,69 @@ struct FsWfFile {
     tags: Vec<String>,
 }
 
-/// GET /api/fs/workflows?dir=<可选>：列出目录下 .yaml/.yml 文件，逐个
-/// `parse_yaml` 提取 name/version（只 parse 不 validate），按名称字母序
-/// （name.to_lowercase，同名按文件名）返回；解析失败项 `valid:false` 带
-/// error（前端可照样打开进编辑器修）。
+/// 递归扫描深度上限：根目录 = 0，子目录每层 +1；更深层级的条目不收录
+/// （根目录文件在深度 0，其下第 1~4 层子目录内的文件收录，第 5 层起排除）。
+const FS_SCAN_MAX_DEPTH: u32 = 4;
+/// 递归扫描跳过的目录名硬编码黑名单（隐藏目录另按 `.` 前缀规则跳过）。
+const FS_SCAN_SKIP_DIRS: [&str; 3] = ["node_modules", "target", "dist"];
+
+/// 递归收集 `dir` 下（含子目录）的 `.yaml`/`.yml` 文件路径，配套记录每个
+/// 文件相对根目录的目录部分（`rel_dir`，`/` 分隔）。
+/// - 深度上限 [`FS_SCAN_MAX_DEPTH`]（根 = 0，超出不进入）；
+/// - 跳过 `.` 开头的隐藏目录与 [`FS_SCAN_SKIP_DIRS`] 黑名单目录；
+/// - 符号链接不跟随（`DirEntry::file_type` 不穿透链接——目录防环、文件不越根）；
+/// - 子目录遍历失败（权限等）跳过并 `tracing::warn`，不挡整个列表；
+///   根目录本身读取失败经 `Err` 上抛（handler 回 500，保持既有语义）。
+fn collect_yaml_files(
+    dir: &Path,
+    rel_dir: &str,
+    depth: u32,
+    out: &mut Vec<(PathBuf, String)>,
+) -> std::io::Result<()> {
+    let entries = std::fs::read_dir(dir)?;
+    for entry in entries.flatten() {
+        // file_type() 不跟随符号链接：symlink 一律跳过（文件与目录同等对待）
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if ft.is_dir() {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            if name.starts_with('.') || FS_SCAN_SKIP_DIRS.contains(&name) {
+                continue;
+            }
+            if depth >= FS_SCAN_MAX_DEPTH {
+                continue; // 子目录深度 = depth+1 > 上限：整层排除
+            }
+            let child_rel = if rel_dir.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{rel_dir}/{name}")
+            };
+            if let Err(e) = collect_yaml_files(&path, &child_rel, depth + 1, out) {
+                tracing::warn!("fs_workflows: 跳过子目录 {}：{e}", path.display());
+            }
+        } else if ft.is_file() {
+            let ext_ok = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
+            if ext_ok {
+                out.push((path, rel_dir.to_owned()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// GET /api/fs/workflows?dir=<可选>：**递归**列出目录下 .yaml/.yml 文件
+/// （含子目录，深度上限 4，跳过隐藏目录与 node_modules/target/dist，不跟随
+/// 符号链接），逐个 `parse_yaml` 提取 name/version（只 parse 不 validate）；
+/// 解析失败项 `valid:false` 带 error（前端可照样打开进编辑器修）。条目带
+/// `relDir`（相对根目录的子目录路径，`""`=根目录）供前端分组。排序：根目录
+/// （relDir 空）文件恒最前，其余按 relDir 字母序（不区分大小写）；同目录内
+/// 按 name.to_lowercase() 字母序，同名再按文件名稳定排序。
 /// 安全注记：本地单人工具，目录来自用户输入属预期行为；本 handler 只读
 /// （列目录 + 读文件），文件夹写入走显式的 [`fs_workflows_save`]（带文件名
 /// 防穿越校验）。
@@ -654,23 +716,12 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
             format!("目录不存在: {}", dir.display()),
         );
     }
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) => return err_json(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-    };
+    let mut found: Vec<(PathBuf, String)> = Vec::new();
+    if let Err(e) = collect_yaml_files(&dir, "", 0, &mut found) {
+        return err_json(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    }
     let mut files: Vec<FsWfFile> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let ext_ok = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
-        if !ext_ok {
-            continue;
-        }
+    for (path, rel_dir) in found {
         let file = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -685,6 +736,7 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
             Ok(text) => match workflow::parse_yaml(&text) {
                 Ok(def) => FsWfFile {
                     file,
+                    rel_dir: rel_dir.clone(),
                     name: def.name,
                     version: Some(def.version),
                     valid: true,
@@ -694,6 +746,7 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
                 },
                 Err(e) => FsWfFile {
                     file,
+                    rel_dir: rel_dir.clone(),
                     name: stem,
                     version: None,
                     valid: false,
@@ -705,6 +758,7 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
             // 文件读不动（权限/编码）：不挡整个列表，按失败项呈现
             Err(e) => FsWfFile {
                 file,
+                rel_dir,
                 name: stem,
                 version: None,
                 valid: false,
@@ -715,11 +769,14 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
         };
         files.push(entry);
     }
-    // 名称字母序（用户要求）；同名再按文件名稳定排序
+    // 排序：根目录（rel_dir 空）恒最前 → rel_dir 字母序（不区分大小写）→
+    // 同目录内名称字母序（用户要求）→ 同名再按文件名稳定排序
     files.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
+        b.rel_dir
+            .is_empty()
+            .cmp(&a.rel_dir.is_empty()) // 根目录（true）排前
+            .then_with(|| a.rel_dir.to_lowercase().cmp(&b.rel_dir.to_lowercase()))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             .then_with(|| a.file.cmp(&b.file))
     });
     let files: Vec<Value> = files
@@ -728,6 +785,7 @@ async fn fs_workflows(Query(q): Query<FsWorkflowsQuery>) -> Response {
             json!({
                 "file": f.file,
                 "name": f.name,
+                "relDir": f.rel_dir,
                 "version": f.version,
                 "valid": f.valid,
                 "error": f.error,
@@ -1674,6 +1732,7 @@ mod tests {
         assert_eq!(files[0]["valid"], true);
         assert_eq!(files[0]["error"], Value::Null);
         assert_eq!(files[0]["yaml"].as_str().unwrap(), alpha_yaml);
+        assert_eq!(files[0]["relDir"], "", "根目录文件 relDir 为空串: {body}");
         assert_eq!(files[1]["name"], "beta");
         assert_eq!(files[1]["file"], "beta.yaml");
         assert_eq!(files[1]["version"], 2);
@@ -1768,6 +1827,73 @@ mod tests {
             .find(|f| f["file"] == "plain.yaml")
             .expect("plain.yaml 在列");
         assert_eq!(plain["tags"], json!([]), "缺省 tags 为空数组: {body}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 递归扫描（子目录归档）：根/子目录/深层文件都收录并带 relDir；.git、
+    /// node_modules、target、dist 跳过；第 5 层（深度超限）不收录；排序为
+    /// 根目录恒最前 → 子目录字母序 → 组内名称字母序（跨组时 rel_dir 优先于
+    /// name——根目录 "Zeta" 排在子目录 "Alpha" 前面）。
+    #[tokio::test]
+    async fn fs_workflows_scans_subdirs_with_rel_dir_and_depth_limit() {
+        let dir =
+            std::env::temp_dir().join(format!("flowscope-fs-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mk = |name: &str| {
+            let p = dir.join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            p
+        };
+        let wf = |name: &str| {
+            format!("meta: {{name: {name}, version: 1}}\nnodes:\n  - {{id: n1, agent: m, prompt: p}}\n")
+        };
+        // 根：alpha.yaml（meta.name "Zeta"——证明跨组按 rel_dir 排，不按 name）
+        std::fs::write(dir.join("alpha.yaml"), wf("Zeta")).unwrap();
+        // 子A：beta.yaml（name "Alpha"）、其下「深」：charlie.yaml（name "Mike"）
+        let sub_a = mk("子A");
+        std::fs::write(sub_a.join("beta.yaml"), wf("Alpha")).unwrap();
+        let deep = mk("子A/深");
+        std::fs::write(deep.join("charlie.yaml"), wf("Mike")).unwrap();
+        // 跳过名单：.git / node_modules / target / dist 里的 yaml 不收录
+        for skip in [".git", "node_modules", "target", "dist"] {
+            let p = mk(skip);
+            std::fs::write(p.join("x.yaml"), wf("SkipMe")).unwrap();
+        }
+        // 深度上限：第 4 层子目录收录、第 5 层排除
+        let l4 = mk("l1/l2/l3/l4");
+        std::fs::write(l4.join("ok.yaml"), wf("DepthOk")).unwrap();
+        let l5 = mk("l1/l2/l3/l4/l5");
+        std::fs::write(l5.join("deep.yaml"), wf("TooDeep")).unwrap();
+
+        let app = router(test_state());
+        let (status, body) = req_json(
+            &app,
+            get_req(format!(
+                "/api/fs/workflows?dir={}",
+                enc_url(dir.to_str().unwrap())
+            )),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let files = body["files"].as_array().unwrap();
+        assert_eq!(files.len(), 4, "跳过与超限目录不收录: {body}");
+
+        // 顺序：Zeta(根) < DepthOk(l1/l2/l3/l4) < Alpha(子A) < Mike(子A/深)。
+        // 注意 name 字母序 Alpha < DepthOk < Mike < Zeta，但跨组 rel_dir 优先
+        // （根目录恒最前、子目录字母序 "l1/..." < "子A"）。
+        let expect = [
+            ("alpha.yaml", "Zeta", ""),
+            ("ok.yaml", "DepthOk", "l1/l2/l3/l4"),
+            ("beta.yaml", "Alpha", "子A"),
+            ("charlie.yaml", "Mike", "子A/深"),
+        ];
+        for (f, (file, name, rel)) in files.iter().zip(expect.iter()) {
+            assert_eq!(f["file"], *file, "{body}");
+            assert_eq!(f["name"], *name, "{body}");
+            assert_eq!(f["relDir"], *rel, "{body}");
+            assert_eq!(f["valid"], true, "{body}");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
