@@ -45,10 +45,13 @@ interface WorkflowRow {
 
 /** GET /api/fs/workflows 行：文件夹里的一个工作流 YAML。valid:false 时
  *  name 回退文件名去扩展名、version 为 null、error 带解析消息——yaml 仍是
- *  文件全文，失败项也可带进编辑器修。tags 为 meta.tags（缺省空数组）。 */
+ *  文件全文，失败项也可带进编辑器修。tags 为 meta.tags（缺省空数组）。
+ *  relDir 为相对扫描根目录的子目录路径（''=根目录，`/` 分隔，如 `归档/2026`）；
+ *  可选字段兼容旧后端响应（缺字段视为 ''，前端按根目录容错）。 */
 export interface FolderWorkflow {
   file: string;
   name: string;
+  relDir?: string;
   version: number | null;
   valid: boolean;
   error: string | null;

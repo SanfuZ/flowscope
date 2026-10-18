@@ -2,6 +2,11 @@
 
 按时间序记录各次交付；细节见对应计划/报告与 `specs/2026-10-02-flowscope-current-state.md`（现状权威文档）。
 
+## 2026-10-18 · 文件夹子目录归档（`feat(core): 工作流文件夹递归扫描（子目录归档，rel_dir 分组字段）` + `feat(frontend): 文件夹页子目录归档分组与路径回写（含文档同步）`）
+- **后端递归扫描（T1）**：`GET /api/fs/workflows` 从根目录递归收集 `.yaml/.yml`——子目录深度上限 **4**（第 5 层起整层不收录）、跳过 `.` 开头隐藏目录与 `node_modules`/`target`/`dist` 硬编码黑名单、符号链接不跟随（目录防环）、子目录遍历失败 warn 跳过不挡列表（根目录读取失败仍 500）；条目增 **relDir**（相对根目录的子目录路径，`""`=根目录、`/` 分隔，如 `归档/2026`）；排序根目录恒最前 → relDir 字母序（小写）→ 组内 name 小写序（同名按文件名）；其余字段与逐文件 parse 逻辑不变。
+- **前端分组与路径回写（T2）**：分组两级落定——全部条目 relDir 为空（平铺目录；旧后端响应缺字段同样容错为根目录）维持**首个 tag 分组**（零回归）；任一条目带子目录切换为 **relDir 分组**（「根目录」组恒最前、子目录字母序、组内名称序；tag 不嵌套分组、保留行上徽标）。路径回写精确到各自子目录：「在编辑器打开」originDir = resolvedDir + '/' + relDir（编辑器「保存到文件夹」/「另存」随之写回子目录）、行内「标记」保存写回来源子目录、「派生」对话框目录预填来源子目录（新文件与源同目录）。收起记忆沿用 `fs-folder-collapsed` 的 `{[dir]: string[]}`（外层 dir 键已隔离组名，不跨目录串）。
+- 测试：cargo **72**（70 lib + 2 e2e；+1 递归扫描：根/子A/深布局、跳过名单、第 4 层收录第 5 层排除、relDir 值与根目录优先排序陷阱）；vitest **163**（+5：relDir 分组组序/组内序、按组收起记忆、originDir 含子目录、派生预填子目录、标记写回子目录 + 缺 relDir 容错）；typecheck/build 过；e2e **4/4 ×2**（specs 未动，e2e home 为平铺目录无视觉变化）。文档同步（现状文档 §2/§5、README 1.2）。
+
 ## 2026-10-18 · 中文模板修复 + 存储保留期（`fix(core): 渲染器兼容非 ASCII 标识符（中文节点 ID/参数名点访问自动转下标）` + `feat(core): FLOWSCOPE_RETENTION_DAYS 存储保留期（含级联清理）`）
 - **渲染器兼容非 ASCII 标识符（fix）**：minijinja 点语法只认 ASCII 标识符——中文节点 ID/参数名（`{{ nodes.取数.output.数据 }}`、`{{ params.主题 }}`）解析期报 `unexpected character` → node.failed → run 失败（已现场复现锁定）。`render_prompt` 渲染前经 `render::preprocess_non_ascii_attributes` 纯函数预处理：只在 `{{ }}`/`{% %}` 表达式内，把「非合法标识符（且非纯数字，保护 `1.5`/`list.0`）」的点访问段改写为等价下标 `["…"]`；连字符 id（`nodes.my-id.x`）同样受益，base 非法（`{{ my-id.x }}`）时后续段一并下标化；引号字符串（含转义）/既有 `["…"]`/普通文本/`{#注释#}` 不动；纯 ASCII 模板逐字节不变（零回归面）。
 - **FLOWSCOPE_RETENTION_DAYS 存储保留期（feat）**：env 设正整数 N 时，bootstrap 开库后执行 `store.prune_runs_before_days(N)`——事务内删除 `started_at` 早于 N 天的 runs 并按 delete_workflow 同款子查询级联删 events/artifacts/sessions，返回删除条数并 `tracing::info`；0/未设=禁用（永久保留），非法值 warn 忽略继续启动。桌面/浏览器/独立 server 三形态共用 bootstrap，一并生效。

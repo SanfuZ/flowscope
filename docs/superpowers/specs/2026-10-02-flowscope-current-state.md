@@ -27,7 +27,7 @@
 | `GET /runs/{id}/events?after=` | SSE：事件 `id:`=seq、`event: fs`、KeepAlive 15s；after=0 即全量回放 |
 | `GET /runs/{id}/artifacts/{node}/{name}` | 节点产物（每成功节点有 `output`） |
 | `GET /agents` | 注册表（key/name/permission_default/healthy——healthy 恒 true，探活未实现） |
-| `GET /fs/workflows?dir=` | **文件夹读取**：列 `*.yaml/*.yml`，parse 取 name/version/**tags**（失败→valid:false 回退文件名；tags 缺省空数组），按 name.to_lowercase() 字母序；目录缺失 400 `目录不存在` |
+| `GET /fs/workflows?dir=` | **文件夹读取（递归）**：从根目录递归列 `*.yaml/*.yml`（子目录深度上限 **4**，第 5 层起不收录；跳过 `.` 开头隐藏目录与 `node_modules`/`target`/`dist` 硬编码黑名单；符号链接不跟随；子目录遍历失败 warn 跳过、不挡列表），parse 取 name/version/**tags**（失败→valid:false 回退文件名；tags 缺省空数组），条目带 **relDir**（相对根目录的子目录路径，`""`=根目录、`/` 分隔）；排序：根目录恒最前 → relDir 字母序 → 组内 name.to_lowercase()（同名按文件名）；目录缺失 400 `目录不存在` |
 | `POST /fs/workflows/save` | **保存到文件夹**（body `{dir, file, yaml}`）：dir 存在且为目录、file 无路径分隔符且 `.yaml/.yml` 结尾（防穿越）、yaml 可 parse（三层 400 校验）→ 覆盖写 `dir/file`，响应 `{dir, file, bytes}` |
 
 - 默认 agents.toml / 工作流文件夹种子：bootstrap 首启生成（`~/.flowscope/agents.toml`、`~/.flowscope/workflows/hello-zcode.yaml`——**已存在的文件不覆盖**，改默认模板需删文件重启）。
@@ -67,7 +67,7 @@ StopReason 5 值映射（acp→NodeFailure）：end_turn→Ok；cancelled→Proc
 | `/` | 运行列表 | 3s 自动刷新；耗时列；空态引导 |
 | `/workflows` | 工作流列表 | 卡片；「新建工作流」→ /workflows/new |
 | `/workflows/:id`（含 new） | **画布编辑器（主交互）** | Palette（隐藏演示 agent mock/bad-mock；整行可点+落场动画）+ 可编辑 DAG（拖入/拉线/删除/拖移）+ PropertyPanel 三态（节点属性/条件边三件套+raw/工作流设置含新节点默认与**标签输入**）+ 撤销重做（快照 50 步，Ctrl+Z/Y，输入框内跳过）+ 校验徽章 + 保存（校验门禁+Ctrl+S+toast+未保存离开拦截 useBlocker）+ **保存到文件夹（通用化）**（常驻按钮：有 effectiveOrigin（location.state origin 或本地 savedOrigin）一键写回该文件；无 → `fs-folderdlg` 对话框选目录/文件名，目录预填 localStorage `fs-workflow-dir` → 后端默认，文件名=model.name 合法化补 `.yaml`）+ **另存到文件夹…**（常驻 Save As：总弹对话框，预填 effectiveOrigin ?? 同上默认；「标记」字段可在保存时**派生 tags**——与画布 tags 不同则对 `toYaml()` 结果做 `setYamlTags` 手术，model 不动）+ YAML 源码滑层（双向，导入失败自动展开原文+错误） |
-| `/folder` | 工作流文件夹 | 目录输入+读取+**刷新**（重读当前目录）；localStorage 记忆；**按首个 `meta.tags` 分组**（组名集合字母序、未分类恒最后、组内名称字母序），组行展开/收起（localStorage `fs-folder-collapsed` 按目录记忆），行 tag 小徽标；**行内标记编辑**（行「标记」按钮→行下 `fs-tagpop` 面板，保存=`setYamlTags` 文档手术只改 `meta.tags`（注释/排版保留）+ `saveFolderWorkflow` 写回 + 重载即时重分组；valid:false 行禁用）；**行内派生**（行「派生」按钮→`fs-folderdlg` 对话框：文件名预填 `<stem>-copy` 保源扩展名、标记预填源 tags、目录=resolvedDir；保存=对**源 yaml 原文**做 `setYamlTags` 手术（标记有变时，注释保留）→ `saveFolderWorkflow` 写新文件（源不动）→ 重载列表；valid:false 行禁用）；一键进编辑器（importedYaml + **originDir/originFile** 经 location.state；解析失败自动开 YAML 层） |
+| `/folder` | 工作流文件夹 | 目录输入+读取+**刷新**（重读当前目录）；localStorage 记忆；**分组两级落定**：后端递归扫描带 relDir——全部条目 relDir 为空（平铺目录/旧后端响应缺字段容错为根目录）→ 维持现状**按首个 `meta.tags` 分组**（组名集合字母序、未分类恒最后、组内名称字母序，零回归）；任一条目带子目录 → **按 relDir 分组**（「根目录」组恒最前、子目录路径字母序、组内名称字母序；tag 不再嵌套分组、保留为行上徽标），组行展开/收起（localStorage `fs-folder-collapsed` 按目录记忆——外层 dir 键隔离组名）；**行内标记编辑**（行「标记」按钮→行下 `fs-tagpop` 面板，保存=`setYamlTags` 文档手术只改 `meta.tags`（注释/排版保留）+ `saveFolderWorkflow` 写回**来源子目录**（resolvedDir + '/' + relDir）+ 重载即时重分组；valid:false 行禁用）；**行内派生**（行「派生」按钮→`fs-folderdlg` 对话框：文件名预填 `<stem>-copy` 保源扩展名、标记预填源 tags、目录=**来源子目录**（新文件与源同目录）；保存=对**源 yaml 原文**做 `setYamlTags` 手术（标记有变时，注释保留）→ `saveFolderWorkflow` 写新文件（源不动）→ 重载列表；valid:false 行禁用）；一键进编辑器（importedYaml + **originDir/originFile** 经 location.state——originDir = resolvedDir + '/' + relDir（根目录文件即 resolvedDir），编辑器「保存到文件夹」随之精确写回子目录；解析失败自动开 YAML 层） |
 | `/runs/:id` | 运行监控 | DAG 状态着色+消息预览行（running 尾 48 字/succeeded ✅）；顶栏 run-status；双击节点→会话视图 |
 | `/runs/:runId/sess/:nodeId` | 节点会话视图 | workflow-demo.html 形式：用户气泡(prompt 来自 node.started)/思考折叠块(默认收起，「N 段·共 X 字」摘要)/工具卡/stop chip/协议事件抽屉（onEvent 旁路收集）；SSE after=0 回放+实时统一 |
 

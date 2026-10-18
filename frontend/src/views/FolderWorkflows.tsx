@@ -1,23 +1,32 @@
 // 工作流文件夹（`/folder`）：git 团队流——团队把工作流 YAML 放 git 仓库管理，
-// FlowScope 从磁盘目录列出 *.yaml/*.yml（后端已按名称字母序排序，含 meta.tags）。
-// 分组与标记（meta.tags）：按**首个 tag** 分组（无 tag → 「未分类」组恒排最后），
-// 组名集合字母序、组内名称字母序（后端已排序，前端重排兜底）；组行可展开/收起，
-// 收起集合按目录记在 localStorage `fs-folder-collapsed`（`{[dir]: string[]}`，
-// 读取成功时按当前目录装载，切换目录自然换组记忆）；行上显示全部 tag 小徽标。
+// FlowScope 从磁盘目录**递归**列出 *.yaml/*.yml（后端深度上限 4、跳过隐藏目录
+// 与 node_modules/target/dist、不跟随符号链接；后端已排序，含 meta.tags 与
+// relDir=相对根目录的子目录路径）。
+// 分组两级落定（buildGroups）：全部条目 relDir 为空（平铺目录/旧后端响应）→
+// 维持现状按**首个 tag** 分组（无 tag → 「未分类」组恒排最后，零回归）；任一
+// 条目带子目录 → 切换为按 **relDir** 分组（'' → 「根目录」组恒最前、子目录按
+// 字母序，组内名称字母序；tag 不再嵌套分组——两层过深，保留为行上徽标）。
+// 组行可展开/收起，收起集合按目录记在 localStorage `fs-folder-collapsed`
+// （`{[dir]: string[]}`——外层键已按目录隔离，组名（含「根目录」/子目录路径）
+// 天然不跨目录串；读取成功时按当前目录装载，切换目录自然换组记忆）；行上
+// 显示全部 tag 小徽标。
 // 「在编辑器打开」把 YAML 经 location.state.importedYaml 带进新建工作流页，
-// 并带 originDir/originFile（来源文件）——编辑器据此显示「保存到文件夹」按钮，
-// 可把画布内容（含 tags）写回来源文件（POST /api/fs/workflows/save），与「保存」
-// （进 FlowScope 数据库）并存，用户自选。「刷新」重读当前目录（保存到文件夹后
-// 可刷出最新内容）。
+// 并带 originDir/originFile（来源文件）——originDir = resolvedDir + '/' +
+// relDir（relDir 空则 resolvedDir，后端 canonicalize 两种分隔符均接受），
+// 编辑器据此显示「保存到文件夹」按钮，可把画布内容（含 tags）写回来源文件
+// （POST /api/fs/workflows/save），与「保存」（进 FlowScope 数据库）并存，
+// 用户自选。「刷新」重读当前目录（保存到文件夹后可刷出最新内容）。
 // 行内「标记」编辑：行操作列的标记按钮在该行下方展开 fs-tagpop 面板（同一时间
 // 只开一个），保存=只改 meta.tags 的文档手术（setYamlTags，保留注释/排版）→
-// saveFolderWorkflow 写回 → 重走刷新的 load 路径即时重分组；失败在面板内提示。
-// 解析失败文件（valid:false）标记按钮禁用（先去编辑器修复）。
+// saveFolderWorkflow 写回**来源子目录**（originDirOf）→ 重走刷新的 load 路径
+// 即时重分组；失败在面板内提示。解析失败文件（valid:false）标记按钮禁用
+// （先去编辑器修复）。
 // 行内「派生」（快速另存）：每行「派生」按钮（valid:false 禁用同标记）打开
 // fs-folderdlg 小对话框——文件名预填 <stem>-copy.<原扩展名>、标记预填源
-// tags、目录预填当前 resolvedDir；保存=对**源文件 yaml 原文**做 setYamlTags
-// 手术（标记有变时；注释/排版保留）→ saveFolderWorkflow 写新文件（源文件不动）
-// → 关对话框 + 重载列表（新文件即时出现，可能进新分组）；失败在对话框内提示。
+// tags、目录预填来源子目录（originDirOf，落在新文件同一子目录）；保存=对
+// **源文件 yaml 原文**做 setYamlTags 手术（标记有变时；注释/排版保留）→
+// saveFolderWorkflow 写新文件（源文件不动）→ 关对话框 + 重载列表（新文件
+// 即时出现，可能进新分组）；失败在对话框内提示。
 // 目录记忆在 localStorage `fs-workflow-dir`：挂载时有缓存目录直接读之，
 // 没有则无参调用一次取后端默认目录（env FLOWSCOPE_WORKFLOW_DIR →
 // ~/.flowscope/workflows）并回填输入框；读取成功后把实际目录写回缓存。
@@ -29,8 +38,22 @@ import { setYamlTags } from '../api/workflowModel';
 
 const DIR_KEY = 'fs-workflow-dir';
 const COLLAPSED_KEY = 'fs-folder-collapsed';
-/** 无 tag 条目的分组名（恒排最后）。 */
+/** 无 tag 条目的分组名（tag 分组模式下恒排最后）。 */
 const UNGROUPED = '未分类';
+/** relDir 分组模式下根目录文件的组名（恒排最前）。 */
+const ROOT_GROUP = '根目录';
+
+/** 条目的 relDir（旧后端响应缺字段 → ''，按根目录容错）。 */
+function relDirOf(f: FolderWorkflow): string {
+  return f.relDir ?? '';
+}
+
+/** 来源目录（写回/派生/在编辑器打开共用）：resolvedDir + '/' + relDir
+ *  （根目录文件即 resolvedDir）——保存路径精确回写各自子目录。 */
+function originDirOf(resolvedDir: string, f: FolderWorkflow): string {
+  const rel = relDirOf(f);
+  return rel === '' ? resolvedDir : `${resolvedDir}/${rel}`;
+}
 
 /** 读某目录的收起组名集合（localStorage 损坏/缺省 → 空集）。 */
 function readCollapsed(dir: string): string[] {
@@ -62,26 +85,44 @@ function writeCollapsed(dir: string, groups: string[]): void {
   }
 }
 
-/** 分组视图：[{key, items}]，组名集合字母序（未分类恒最后），组内名称字母序。 */
+/** 分组视图：[{key, items}]。两级规则（落定）：全部条目 relDir 为空（平铺
+ *  目录/旧后端响应）→ 维持现状按首个 tag 分组（未分类恒最后）；任一条目带
+ *  子目录 → 按 relDir 分组（根目录「根目录」恒最前、子目录字母序、组内名称
+ *  字母序；tag 不嵌套分组，保留为行上徽标）。 */
 function buildGroups(files: FolderWorkflow[]): { key: string; items: FolderWorkflow[] }[] {
+  const byName = (list: FolderWorkflow[]) =>
+    [...list].sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1));
+  if (!files.some((f) => relDirOf(f) !== '')) {
+    // 平铺目录：现状 tag 分组不变（零回归；旧后端响应同此路径）
+    const byGroup = new Map<string, FolderWorkflow[]>();
+    for (const f of files) {
+      const key = f.tags[0] ?? UNGROUPED;
+      const list = byGroup.get(key);
+      if (list) list.push(f);
+      else byGroup.set(key, [f]);
+    }
+    const keys = [...byGroup.keys()].sort((a, b) => {
+      if (a === UNGROUPED) return 1; // 未分类恒最后
+      if (b === UNGROUPED) return -1;
+      return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
+    });
+    return keys.map((key) => ({ key, items: byName(byGroup.get(key)!) }));
+  }
+  // 子目录归档：按 relDir 分组（后端已按 根目录在前→relDir 字母序→组内名称序
+  // 排好，前端重排兜底）
   const byGroup = new Map<string, FolderWorkflow[]>();
   for (const f of files) {
-    const key = f.tags[0] ?? UNGROUPED;
+    const key = relDirOf(f) === '' ? ROOT_GROUP : relDirOf(f);
     const list = byGroup.get(key);
     if (list) list.push(f);
     else byGroup.set(key, [f]);
   }
   const keys = [...byGroup.keys()].sort((a, b) => {
-    if (a === UNGROUPED) return 1; // 未分类恒最后
-    if (b === UNGROUPED) return -1;
+    if (a === ROOT_GROUP) return -1; // 根目录恒最前
+    if (b === ROOT_GROUP) return 1;
     return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
   });
-  return keys.map((key) => ({
-    key,
-    items: [...byGroup.get(key)!].sort((a, b) =>
-      a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1,
-    ),
-  }));
+  return keys.map((key) => ({ key, items: byName(byGroup.get(key)!) }));
 }
 
 export default function FolderWorkflows() {
@@ -168,7 +209,8 @@ export default function FolderWorkflows() {
     setTagSaving(true);
     setTagError('');
     try {
-      await api.saveFolderWorkflow({ dir: resolvedDir, file: f.file, yaml });
+      // 写回来源子目录（originDirOf）：子目录文件的标记编辑不能写到根目录
+      await api.saveFolderWorkflow({ dir: originDirOf(resolvedDir, f), file: f.file, yaml });
       setTagEditFile(null);
       await load(resolvedDir || dir); // 与「刷新」同一路径：保存后即时重分组
     } catch (e) {
@@ -179,13 +221,14 @@ export default function FolderWorkflows() {
   };
 
   /** 打开派生对话框：文件名 = 源 stem + `-copy`（保留源的 .yaml/.yml 扩展名），
-   *  标记 = 源 tags join，目录 = 当前 resolvedDir；与行内标记面板互斥。 */
+   *  标记 = 源 tags join，目录 = 来源子目录（originDirOf——新文件与源同目录）；
+   *  与行内标记面板互斥。 */
   const openDerive = (f: FolderWorkflow) => {
     setTagEditFile(null); // 与行内标记面板互斥（单例弹出层）
     const stem = f.file.replace(/\.ya?ml$/i, '');
     const ext = /\.yml$/i.test(f.file) ? '.yml' : '.yaml';
     setDeriveFrom(f);
-    setDeriveDir(resolvedDir);
+    setDeriveDir(originDirOf(resolvedDir, f));
     setDeriveFile(`${stem}-copy${ext}`);
     setDeriveTags(f.tags.join(', '));
     setDeriveError('');
@@ -244,7 +287,7 @@ export default function FolderWorkflows() {
       <header className="fs-page__head">
         <h1>工作流文件夹</h1>
         <span className="fs-muted">
-          把工作流 YAML 放进 git 仓库管理的文件夹，FlowScope 从这里读取（按标记分组、名称字母序）
+          把工作流 YAML 放进 git 仓库管理的文件夹，FlowScope 递归读取（含子文件夹；有子文件夹按其分组，平铺时按标记分组）
         </span>
       </header>
       <div className="fs-folder-bar">
@@ -335,7 +378,7 @@ export default function FolderWorkflows() {
                                 navigate('/workflows/new', {
                                   state: {
                                     importedYaml: f.yaml,
-                                    originDir: resolvedDir,
+                                    originDir: originDirOf(resolvedDir, f),
                                     originFile: f.file,
                                   },
                                 })

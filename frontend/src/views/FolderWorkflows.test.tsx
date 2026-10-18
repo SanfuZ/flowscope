@@ -5,6 +5,9 @@
 // afterEach 清理；项目未引入 jest-dom，沿用既有测试约定（.disabled/textContent）。
 // 行内标记编辑：setYamlTags 走真实模块（不经 mock）——保存断言 yaml 实为
 // 文档手术结果（新 tags 在、原注释在）。
+// 子目录归档（relDir）：有子目录条目 → 按 relDir 分组（根目录恒最前）；
+// 全部缺 relDir（旧后端/平铺目录）→ 维持 tag 分组（上方 describe 即现状
+// 回归）；originDir/派生预填/标记写回均含子目录路径。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom';
@@ -217,6 +220,124 @@ describe('FolderWorkflows：分组与收起（meta.tags）', () => {
     await waitFor(() => expect(groupChevron('演示 (2)')).toBe('▶')); // 装载该目录的收起集合
     expect(screen.queryByText('Zeta')).toBeNull();
     expect(screen.queryByText('NoTag')).not.toBeNull(); // 未分类组不受影响
+  });
+});
+
+/** 子目录归档 fixture：根（含缺 relDir 的旧字段条目，容错为根目录）+ 子A +
+ *  子A/深 两层；根文件 name "Zeta" 与组内字母序（Alpha < beta）构成跨组陷阱
+ *  ——组序按 relDir（根目录恒最前），不受 name 影响。 */
+const SUBDIR_FILES = [
+  { file: 'a.yaml', name: 'Zeta', version: 1, valid: true, error: null, yaml: YAML_A, tags: [] as string[], relDir: '' },
+  { file: 'b.yaml', name: 'beta', version: 1, valid: true, error: null, yaml: YAML_B, tags: ['演示'], relDir: '子A' },
+  { file: 'c.yaml', name: 'Alpha', version: 1, valid: true, error: null, yaml: YAML_A, tags: [], relDir: '子A' },
+  { file: 'd.yaml', name: 'Mike', version: 1, valid: true, error: null, yaml: YAML_B, tags: [], relDir: '子A/深' },
+  // 旧后端响应缺 relDir 字段：视为 ''（根目录），不炸
+  { file: 'e.yaml', name: 'NoRel', version: 1, valid: true, error: null, yaml: YAML_A, tags: [] },
+];
+
+describe('FolderWorkflows：子目录归档分组（relDir）', () => {
+  /** 取某名称所在数据行。 */
+  function rowOf(name: string): HTMLElement {
+    return screen.getByText(name).closest('tr')!;
+  }
+
+  it('有子目录条目：按 relDir 分组（根目录恒最前、子目录字母序），组内名称序，tag 只作行上徽标', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: SUBDIR_FILES });
+    renderFolder();
+    await screen.findByText('根目录 (2)');
+
+    // 组序：根目录（含缺 relDir 容错条目）→ 子A → 子A/深；与 name 无关
+    // （Zeta 在根目录组、Alpha 在子A 组，跨组不按 name 排）
+    const labels = screen
+      .getAllByRole('row')
+      .map((r) => r.querySelector('.fs-folder-group__label')?.textContent)
+      .filter((t): t is string => t !== undefined);
+    expect(labels).toEqual(['根目录 (2)', '子A (2)', '子A/深 (1)']);
+
+    // 行结构：表头/根目录组行/NoRel/Zeta/子A组行/Alpha/beta/子A/深组行/Mike。
+    // 组内名称序：NoRel < Zeta、Alpha < beta；tag 不再嵌套分组（beta 的
+    // 「演示」只作行上徽标）
+    const rows = screen.getAllByRole('row');
+    expect(rows).toHaveLength(9);
+    expect(rows[2].textContent).toContain('NoRel');
+    expect(rows[3].textContent).toContain('Zeta');
+    expect(rows[5].textContent).toContain('Alpha');
+    expect(rows[6].textContent).toContain('beta');
+    expect(rows[8].textContent).toContain('Mike');
+    expect(rows[6].querySelectorAll('.fs-tag-pill')).toHaveLength(1);
+  });
+
+  it('组行收起/展开按组写 localStorage（dir 键隔离组名），各组互不影响', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: SUBDIR_FILES });
+    renderFolder();
+    await screen.findByText('根目录 (2)');
+
+    fireEvent.click(screen.getByText('根目录 (2)')); // 收起根目录组
+    expect(screen.queryByText('Zeta')).toBeNull();
+    expect(screen.queryByText('Mike')).not.toBeNull(); // 其它组不受影响
+    expect(JSON.parse(localStorage.getItem('fs-folder-collapsed')!)).toEqual({
+      'D:/team/wf': ['根目录'],
+    });
+
+    fireEvent.click(screen.getByText('子A/深 (1)')); // 再收起一个子目录组
+    expect(screen.queryByText('Mike')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('fs-folder-collapsed')!)).toEqual({
+      'D:/team/wf': ['根目录', '子A/深'],
+    });
+
+    fireEvent.click(screen.getByText('根目录 (2)')); // 展开根目录组：只移除自己
+    expect(screen.queryByText('Zeta')).not.toBeNull();
+    expect(screen.queryByText('Mike')).toBeNull();
+    expect(JSON.parse(localStorage.getItem('fs-folder-collapsed')!)).toEqual({
+      'D:/team/wf': ['子A/深'],
+    });
+  });
+
+  it('在编辑器打开：originDir 含子目录（根目录文件不带尾分隔符）', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: SUBDIR_FILES });
+    const { unmount } = renderFolder();
+    await screen.findByText('Mike');
+
+    // 子目录/深 层文件：originDir = resolvedDir + '/' + relDir
+    fireEvent.click(within(rowOf('Mike')).getByRole('button', { name: '在编辑器打开' }));
+    expect(screen.getByTestId('editor-probe').textContent).toBe(
+      `imported:${YAML_B}|originDir:D:/team/wf/子A/深|originFile:d.yaml`,
+    );
+
+    // 根目录文件：originDir = resolvedDir（无尾分隔符）；导航已离开 /folder，
+    // 重挂载一次再点（mock 相同数据）
+    unmount();
+    renderFolder();
+    await screen.findByText('Zeta');
+    fireEvent.click(within(rowOf('Zeta')).getByRole('button', { name: '在编辑器打开' }));
+    expect(screen.getByTestId('editor-probe').textContent).toBe(
+      `imported:${YAML_A}|originDir:D:/team/wf|originFile:a.yaml`,
+    );
+  });
+
+  it('派生对话框：目录预填来源子目录（新文件与源同目录）', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: SUBDIR_FILES });
+    renderFolder();
+    await screen.findByText('Alpha');
+
+    fireEvent.click(screen.getByTestId('derive-c.yaml')); // 子A/alpha.yaml
+    const dlg = screen.getByRole('dialog', { name: '派生工作流' });
+    expect((within(dlg).getByLabelText('目录路径') as HTMLInputElement).value).toBe('D:/team/wf/子A');
+    expect((within(dlg).getByLabelText('文件名') as HTMLInputElement).value).toBe('c-copy.yaml');
+  });
+
+  it('行内标记保存：写回来源子目录（dir 含 relDir）', async () => {
+    vi.mocked(api.listFolderWorkflows).mockResolvedValue({ dir: 'D:/team/wf', files: SUBDIR_FILES });
+    vi.mocked(api.saveFolderWorkflow).mockResolvedValue({ dir: 'D:/team/wf/子A', file: 'b.yaml', bytes: 99 });
+    renderFolder();
+    await screen.findByText('Alpha');
+
+    fireEvent.click(screen.getByTestId('tag-edit-b.yaml'));
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(api.saveFolderWorkflow).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(api.saveFolderWorkflow).mock.calls[0][0];
+    expect(arg.dir).toBe('D:/team/wf/子A'); // 不能写到根目录（否则根目录出重复文件）
+    expect(arg.file).toBe('b.yaml');
   });
 });
 
